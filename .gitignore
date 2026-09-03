@@ -5,3 +5,6 @@ work/*
 output/*
 !work/.gitkeep
 !output/.gitkeep
+ffmpeg.exe
+ffplay.exe
+ffprobe.exe

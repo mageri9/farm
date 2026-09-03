@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import inspect
 
 
 class TTSError(RuntimeError):
@@ -43,11 +44,15 @@ async def generate_tts(text: str, audio_path: Path, voice: str, rate: str) -> li
         import edge_tts
     except ImportError as exc:
         raise TTSError("edge-tts is not installed. Run: pip install -r requirements.txt") from exc
-
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     boundaries: list[WordBoundary] = []
     try:
-        communicate = edge_tts.Communicate(text, voice, rate=rate)
+        # В новых версиях edge-tts нужно явно запросить WordBoundary
+        kwargs = {"rate": rate}
+        if "boundary" in inspect.signature(edge_tts.Communicate).parameters:
+            kwargs["boundary"] = "WordBoundary"
+
+        communicate = edge_tts.Communicate(text, voice, **kwargs)
         with audio_path.open("wb") as output:
             async for event in communicate.stream():
                 event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
@@ -55,13 +60,12 @@ async def generate_tts(text: str, audio_path: Path, voice: str, rate: str) -> li
                     data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
                     if data:
                         output.write(data)
-                elif event_type == "WordBoundary":
+                elif event_type in ("WordBoundary", "SentenceBoundary"):
                     boundary = _boundary_from_event(event)
                     if boundary:
                         boundaries.append(boundary)
-    except Exception as exc:  # edge-tts has several exception types across versions
+    except Exception as exc:
         raise TTSError(f"Edge TTS failed: {exc}") from exc
-
     if not boundaries:
         raise TTSError("Edge TTS returned no WordBoundary events; cannot create timed subtitles.")
     if not audio_path.exists() or audio_path.stat().st_size == 0:
