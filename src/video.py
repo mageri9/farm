@@ -47,7 +47,10 @@ def random_start(background_duration: float, audio_duration: float, seed: int | 
     if background_duration + 1e-6 < audio_duration:
         raise VideoError(f"Background video is too short. Required {audio_duration:.1f} sec; Available {background_duration:.1f} sec")
     rng = random.Random(seed)
-    return rng.uniform(0.0, max(0.0, background_duration - audio_duration))
+    # Keep a small tail of the source untouched so rounding/encoder delay does
+    # not make the selected segment run past the background's final frame.
+    available = max(0.0, background_duration - audio_duration - 0.5)
+    return rng.uniform(0.0, available)
 
 
 def calculate_random_start(background_duration: float, audio_duration: float, seed: int | None = None) -> float:
@@ -56,8 +59,11 @@ def calculate_random_start(background_duration: float, audio_duration: float, se
 
 def render_video(background: Path, audio: Path, subtitles: Path, output: Path, duration: float, start: float, settings: Settings) -> None:
     check_executable("ffmpeg")
-    subtitle_filter = f"subtitles='{escape_subtitle_path(subtitles)}'"
-    vf = f"crop=ih*9/16:ih:(iw-ow)/2:0,scale={settings.video_width}:{settings.video_height},{subtitle_filter}"
+    subtitle_path = escape_subtitle_path(subtitles)
+    fonts_dir = escape_subtitle_path(settings.assets_dir / "fonts")
+    subtitle_filter = f"subtitles='{subtitle_path}':fontsdir='{fonts_dir}'"
+    vf = (f"crop=trunc(ih*9/16/2)*2:ih:(iw-ow)/2:0,"
+          f"scale={settings.video_width}:{settings.video_height},setpts=PTS-STARTPTS,{subtitle_filter}")
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}",
            "-i", str(background), "-i", str(audio), "-t", f"{duration:.3f}", "-vf", vf, "-map", "0:v:0", "-map", "1:a:0",
            "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf), "-r", str(settings.fps),

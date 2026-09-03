@@ -62,6 +62,12 @@ def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtit
 
 def escape_subtitle_path(path: str | Path) -> str:
     """Escape a path for FFmpeg's subtitles= filter argument (Windows-safe)."""
-    value = str(Path(path).resolve()).replace("\\", "/")
+    raw = str(path)
+    # Do not resolve a Windows path on a non-Windows host: Path.resolve() would
+    # prepend the current working directory to an already absolute drive path.
+    is_windows_absolute = len(raw) >= 3 and raw[1] == ":" and raw[2] in "\\/"
+    is_unc = raw.startswith((r"\\", "//"))
+    is_posix_absolute = raw.startswith("/")
+    value = raw if is_windows_absolute or is_unc or is_posix_absolute else str(Path(path).resolve())
+    value = value.replace("\\", "/")
     return value.replace("'", r"\'").replace(":", r"\:").replace(",", r"\,")
-

@@ -33,7 +33,16 @@ class SubtitleTests(unittest.TestCase):
         self.assertIn(r"D\:/", escaped)
         self.assertIn(r"sub\,one.ass", escaped)
 
+    def test_escape_windows_backslash_path_without_resolving_it(self):
+        self.assertEqual(escape_subtitle_path(r"C:\project\subtitles.ass"), r"C\:/project/subtitles.ass")
+
+    def test_escape_path_with_apostrophe(self):
+        escaped = escape_subtitle_path(r"C:\folder\John's subtitles.ass")
+        self.assertIn(r"John\'s subtitles.ass", escaped)
+
+    def test_escape_normalized_posix_path(self):
+        self.assertEqual(escape_subtitle_path("/tmp/subtitles.ass"), "/tmp/subtitles.ass")
+
 
 if __name__ == "__main__":
     unittest.main()
-
