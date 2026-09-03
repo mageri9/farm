@@ -1,0 +1,2 @@
+"""Vertical Shorts generator package."""
+
