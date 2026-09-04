@@ -28,16 +28,18 @@ class AdaptedStory(BaseModel):
     @classmethod
     def validate_title(cls, value: str) -> str:
         value = value.strip()
-        if not value or len(value.split()) > 6:
-            raise ValueError("Title must contain 1-6 words")
+        if not value or len(value.split()) > 10:
+            raise ValueError(f"Title too long ({len(value.split())} words)")
         return value
 
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str) -> str:
         value = value.strip()
-        if not 70 <= len(value.split()) <= 85:
-            raise ValueError("Story must contain 70-85 words")
+        words = len(value.split())
+        # Shorts отлично переваривает от 45 до 120 слов
+        if not 45 <= words <= 120:
+            raise ValueError(f"Story length is {words} words, required 45-120")
         return value
 
     @field_validator("tags")
@@ -71,7 +73,8 @@ class StoryAdapter:
             content = completion.choices[0].message.content or ""
             data = self._parse_json(content)
             return AdaptedStory.model_validate(data).model_dump()
-        except (APIError, APITimeoutError, ValidationError, ValueError, IndexError, TypeError):
+        except Exception as exc:
+            print(f"[AI ERROR] {type(exc).__name__}: {exc}")
             return None
 
     @staticmethod
@@ -83,3 +86,29 @@ class StoryAdapter:
         if not isinstance(parsed, dict):
             raise ValueError("Model response is not an object")
         return parsed
+
+    async def generate_story_from_scratch(
+        self, topic: str = "бытовая драма, измена или конфликт в семье"
+    ) -> dict | None:
+        """Синтезирует виральную историю с нуля в стиле Reddit r/AITAH без парсинга."""
+        prompt = (
+            f"Придумай реалистичную, вирусную историю из жизни в стиле Reddit r/AITAH или r/tifu на тему: '{topic}'. "
+            "История должна звучать максимально искренне и правдиво от первого лица, вызывая бурю споров в комментариях."
+        )
+        try:
+            completion = await self.client.chat.completions.create(
+                model=self.model,
+                temperature=0.9,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            content = completion.choices[0].message.content or ""
+            data = self._parse_json(content)
+            return AdaptedStory.model_validate(data).model_dump()
+        except Exception as exc:
+            print(f"[AI ERROR] {type(exc).__name__}: {exc}")
+            return None
+
