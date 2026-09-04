@@ -8,3 +8,4 @@ output/*
 ffmpeg.exe
 ffplay.exe
 ffprobe.exe
+input/
