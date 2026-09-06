@@ -53,10 +53,6 @@ def random_start(background_duration: float, audio_duration: float, seed: int | 
     return rng.uniform(0.0, available)
 
 
-def calculate_random_start(background_duration: float, audio_duration: float, seed: int | None = None) -> float:
-    return random_start(background_duration, audio_duration, seed)
-
-
 def render_video(background: Path, audio: Path, subtitles: Path, output: Path, duration: float, start: float, settings: Settings) -> None:
     check_executable("ffmpeg")
     subtitle_path = escape_subtitle_path(subtitles)

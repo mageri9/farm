@@ -28,14 +28,8 @@ def _escape_ass_text(text: str) -> str:
 
 
 def choose_font(configured: str, fonts_dir: Path | None = None) -> str:
-    if not configured:
-        return "Arial"
-    if fonts_dir:
-        for path in fonts_dir.glob("*"):
-            if path.suffix.lower() in {".ttf", ".otf"} and path.stem.lower() == configured.lower():
-                return configured
-    # ASS/FFmpeg will resolve installed fonts; Arial is a dependable fallback.
-    return configured
+    # Font discovery is delegated to libass/FFmpeg; keep the argument for API compatibility.
+    return configured.strip() or "Arial"
 
 
 def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtitle: int = 2,

@@ -2,11 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.subtitles import escape_subtitle_path, format_time_ass, group_words, write_ass
+from src.subtitles import choose_font, escape_subtitle_path, format_time_ass, group_words, write_ass
 from src.tts import WordBoundary
 
 
 class SubtitleTests(unittest.TestCase):
+    def test_choose_font_uses_configured_name_or_arial(self):
+        self.assertEqual(choose_font(" Montserrat "), "Montserrat")
+        self.assertEqual(choose_font(""), "Arial")
+
     def test_format_time_ass_rounds_centiseconds(self):
         self.assertEqual(format_time_ass(1.234), "0:00:01.23")
         self.assertEqual(format_time_ass(1.235), "0:00:01.24")

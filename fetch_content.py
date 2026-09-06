@@ -8,8 +8,31 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.content.adapter import StoryAdapter
+from src.content.adapter import DEFAULT_MODEL, StoryAdapter
 from src.content.reddit import fetch_reddit_stories
+
+AI_TOPICS = (
+    "измена и предательство лучшего друга перед свадьбой",
+    "наследство, из-за которого разругалась вся семья",
+    "тайна мужа, раскрытая через скрытый аккаунт в соцсетях",
+    "конфликт с токсичными родственниками на празднике",
+    "случайно раскрытый обман на работе, подставивший коллегу",
+    "сосед, который годами пользовался чужой парковкой",
+    "подруга, скопировавшая свадьбу до мелочей",
+    "родители, тайно набравшие кредитов на имя ребёнка",
+    "неожиданный гость, сорвавший семейную помолвку",
+    "ложь о дипломе, вскрывшаяся на собеседовании",
+    "бывший партнёр, потребовавший вернуть дорогой подарок",
+    "ребёнок, узнавший на семейном ужине правду о своём отце",
+    "арендодатель, тайно входивший в квартиру жильца",
+    "подмена подарка на юбилее, раскрывшая давнюю обиду",
+    "невеста, запретившая сестре жениха приходить на свадьбу",
+    "анонимная жалоба, из-за которой уволили невиновного сотрудника",
+    "семейный рецепт, который бабушка завещала только одному из внуков",
+    "друг, который годами выдавал чужие успехи за свои",
+    "домашняя камера, снявшая неожиданную правду о няне",
+    "ошибочно отправленное сообщение, разрушившее многолетнюю дружбу",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", choices=["reddit", "ai"], default="ai", help="Источник: reddit или ai")
     parser.add_argument("--subreddits", default="AITAH,relationship_advice,tifu")
     parser.add_argument("--count", type=int, default=5)
-    parser.add_argument("--model", default="am/free")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--output", type=Path, default=Path("input/stories.json"))
     return parser.parse_args()
 
@@ -66,17 +89,9 @@ async def run(args: argparse.Namespace) -> int:
         if args.source == "reddit":
             print("[WARN] Reddit заблокировал запросы, переключаемся на генерацию через AnyModel...")
 
-        topics = [
-            "измена и предательство лучшего друга перед свадьбой",
-            "наследство, из-за которого разругалась вся семья",
-            "тайна мужа, раскрытая через скрытый аккаунт в соцсетях",
-            "конфликт с токсичными родственниками на празднике",
-            "случайно раскрытый обман на работе, подставивший коллегу",
-        ]
-
         while len(stories) < args.count:
             idx = len(stories)
-            topic = topics[idx % len(topics)]
+            topic = AI_TOPICS[idx % len(AI_TOPICS)]
             print(f"[AI {idx + 1}/{args.count}] Генерируем сюжет: '{topic}'")
             story = await adapter.generate_story_from_scratch(topic)
             if story:

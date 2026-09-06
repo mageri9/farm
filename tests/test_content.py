@@ -1,6 +1,6 @@
 import unittest
 
-from src.content.adapter import AdaptedStory, StoryAdapter
+from src.content.adapter import DEFAULT_MODEL, AdaptedStory, StoryAdapter
 
 
 class AdapterTests(unittest.TestCase):
@@ -18,12 +18,17 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(len(story.text.split()), 70)
 
     def test_adapted_story_rejects_wrong_word_count(self) -> None:
-        with self.assertRaises(ValueError):
-            AdaptedStory(
-                title="Слишком коротко",
-                text="мало слов",
-                tags=["#истории", "#реддит", "#драма", "#шортс"],
-            )
+        for word_count in (69, 86):
+            with self.subTest(word_count=word_count), self.assertRaises(ValueError):
+                AdaptedStory(
+                    title="Неверная длина",
+                    text=" ".join(f"слово{i}" for i in range(word_count)),
+                    tags=["#истории", "#реддит", "#драма", "#шортс"],
+                )
+
+    def test_story_adapter_uses_cli_default_model(self) -> None:
+        adapter = StoryAdapter("test-key")
+        self.assertEqual(adapter.model, DEFAULT_MODEL)
 
 
 if __name__ == "__main__":

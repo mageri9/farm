@@ -7,6 +7,8 @@ from typing import Any
 from openai import APIError, APITimeoutError, AsyncOpenAI
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+DEFAULT_MODEL = "am/free"
+
 SYSTEM_PROMPT = """Ты — опытный сценарист виральных Shorts/Reels на русском языке в нише бытовых драм и Reddit-историй.
 Адаптируй исходную историю в монолог для озвучки:
 1. Хук (0–3 сек): шокирующее признание от первого лица. Запрещены клише «Привет, реддит», «Сегодня я расскажу», «Пользователь поделился».
@@ -37,9 +39,8 @@ class AdaptedStory(BaseModel):
     def validate_text(cls, value: str) -> str:
         value = value.strip()
         words = len(value.split())
-        # Shorts отлично переваривает от 45 до 120 слов
-        if not 45 <= words <= 120:
-            raise ValueError(f"Story length is {words} words, required 45-120")
+        if not 70 <= words <= 85:
+            raise ValueError(f"Story length is {words} words, required 70-85")
         return value
 
     @field_validator("tags")
@@ -52,7 +53,7 @@ class AdaptedStory(BaseModel):
 
 
 class StoryAdapter:
-    def __init__(self, api_key: str, model: str = "deepseek/deepseek-chat") -> None:
+    def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         if not api_key:
             raise ValueError("ANYMODEL_API_KEY is not set")
         self.client = AsyncOpenAI(api_key=api_key, base_url="https://anymodel.org/v1")
@@ -111,4 +112,3 @@ class StoryAdapter:
         except Exception as exc:
             print(f"[AI ERROR] {type(exc).__name__}: {exc}")
             return None
-
