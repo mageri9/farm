@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import inspect
+import math
 
 
 class TTSError(RuntimeError):
@@ -35,6 +36,8 @@ def _boundary_from_event(event: Any) -> WordBoundary | None:
         end = max(start, start + float(duration) * 1e-7)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        return None
     return WordBoundary(text, start, end)
 
 
@@ -60,12 +63,12 @@ async def generate_tts(text: str, audio_path: Path, voice: str, rate: str) -> li
                     data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
                     if data:
                         output.write(data)
-                elif event_type in ("WordBoundary", "SentenceBoundary"):
+                elif event_type == "WordBoundary":
                     boundary = _boundary_from_event(event)
                     if boundary:
                         boundaries.append(boundary)
     except Exception as exc:
-        raise TTSError(f"Edge TTS failed: {exc}") from exc
+        raise TTSError(f"Edge TTS failed ({type(exc).__name__}); check network and voice settings") from exc
     if not boundaries:
         raise TTSError("Edge TTS returned no WordBoundary events; cannot create timed subtitles.")
     if not audio_path.exists() or audio_path.stat().st_size == 0:

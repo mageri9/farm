@@ -47,8 +47,8 @@ class AdaptedStory(BaseModel):
     def validate_text(cls, value: str) -> str:
         value = value.strip()
         words = len(value.split())
-        if not 60 <= words <= 95:
-            raise ValueError(f"Story length is {words} words, required 60-95")
+        if not 70 <= words <= 85:
+            raise ValueError(f"Story length is {words} words, required 70-85")
         return value
 
     @field_validator("tags", mode="before")
