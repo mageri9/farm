@@ -1,30 +1,38 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
+from openai import AsyncOpenAI
+from pydantic import BaseModel, Field, field_validator
 
-from openai import APIError, APITimeoutError, AsyncOpenAI
-from pydantic import BaseModel, Field, ValidationError, field_validator
+# Модель по умолчанию из .env или Claude Sonnet 5
+DEFAULT_MODEL = os.getenv("ANYMODEL_MODEL", "cc/claude-sonnet-5")
 
-DEFAULT_MODEL = "am/free"
+SYSTEM_PROMPT = """Ты — сценарист вирусных коротких видео (Shorts/Reels) в стиле историй с Пикабу и «Подслушано».
+Напиши монолог от первого лица о реальной бытовой ситуации в СНГ (семья, жилье, деньги, соседи).
 
-SYSTEM_PROMPT = """Ты — опытный сценарист виральных Shorts/Reels на русском языке в нише бытовых драм и Reddit-историй.
-Адаптируй исходную историю в монолог для озвучки:
-1. Хук (0–3 сек): шокирующее признание от первого лица. Запрещены клише «Привет, реддит», «Сегодня я расскажу», «Пользователь поделился».
-2. Тело (30–40 сек): динамичное раскрытие конфликта, никакой воды.
-3. Клиффхэнгер / открытый финал (последние 5 сек): интригующий вопрос к зрителям, провоцирующий комментарий («Как бы вы поступили?», «Я прав в этой ситуации?»).
-СТРОГО 70–85 слов в поле text. Выводи только валидный JSON с ключами:
-title — цепляющий заголовок на русском, до 6 слов;
-text — только текст диктора, без ремарок в скобках;
-tags — список из 4–5 хэштегов.
+Правила структуры:
+1. Хук (0–3 сек): резкое признание без приветствий («В день свадьбы свекровь шепнула мне на ухо то, от чего земля ушла из-под ног...»).
+2. Конфликт (30–40 сек): реалии жизни (ипотека, дубликат ключей, дача, чат дома, МФЦ). Разговорный живой язык, эмоции.
+3. Развязка/Обрыв (последние 5 сек): этический тупик или открытый финал («Как бы вы поступили на моем месте?»).
+
+Требования:
+- Объем строго от 65 до 85 слов в поле text.
+- Выводи только валидный JSON:
+{
+  "title": "Цепляющий заголовок до 6 слов",
+  "text": "Текст диктора без ремарок",
+  "tags": ["#историиизжизни", "#жиза", "#семья", "#отношения", "#шортс"]
+}
 """
 
 
 class AdaptedStory(BaseModel):
     title: str
     text: str
-    tags: list[str] = Field(min_length=4, max_length=5)
+    tags: list[str] = Field(default_factory=list)
 
     @field_validator("title")
     @classmethod
@@ -39,17 +47,32 @@ class AdaptedStory(BaseModel):
     def validate_text(cls, value: str) -> str:
         value = value.strip()
         words = len(value.split())
-        if not 70 <= words <= 85:
-            raise ValueError(f"Story length is {words} words, required 70-85")
+        if not 60 <= words <= 95:
+            raise ValueError(f"Story length is {words} words, required 60-95")
         return value
 
-    @field_validator("tags")
+    @field_validator("tags", mode="before")
     @classmethod
-    def validate_tags(cls, value: list[str]) -> list[str]:
-        tags = [tag.strip() for tag in value]
-        if any(not tag.startswith("#") or len(tag) == 1 for tag in tags):
-            raise ValueError("Every tag must be a non-empty hashtag")
-        return tags
+    def sanitize_tags(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            value = [t.strip() for t in value.split(",")]
+        if not isinstance(value, list):
+            value = ["#историиизжизни", "#жиза", "#шортс"]
+
+        clean_tags: list[str] = []
+        for tag in value:
+            t = str(tag).strip()
+            if not t:
+                continue
+            if not t.startswith("#"):
+                t = f"#{t}"
+            clean_tags.append(t)
+
+        # Берем максимум 5 тегов, дополняем если меньше 3
+        result = clean_tags[:5]
+        while len(result) < 3:
+            result.append("#шортс")
+        return result
 
 
 class StoryAdapter:
@@ -89,17 +112,17 @@ class StoryAdapter:
         return parsed
 
     async def generate_story_from_scratch(
-        self, topic: str = "бытовая драма, измена или конфликт в семье"
+        self, topic: str = "скандал из-за наследства или жилья"
     ) -> dict | None:
-        """Синтезирует виральную историю с нуля в стиле Reddit r/AITAH без парсинга."""
+        """Синтезирует виральную историю с нуля под Рунет."""
         prompt = (
-            f"Придумай реалистичную, вирусную историю из жизни в стиле Reddit r/AITAH или r/tifu на тему: '{topic}'. "
-            "История должна звучать максимально искренне и правдиво от первого лица, вызывая бурю споров в комментариях."
+            f"Напиши жизненную, скандальную историю от первого лица на тему: '{topic}'. "
+            "Используй реалии жизни в России/СНГ. Текст должен звучать искренне и вызывать бурную реакцию в комментариях."
         )
         try:
             completion = await self.client.chat.completions.create(
                 model=self.model,
-                temperature=0.9,
+                temperature=0.85,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
