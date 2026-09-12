@@ -25,9 +25,9 @@ class ShortsPipeline:
         s = self.settings
         check_executable(s.ffmpeg)
         check_executable(s.ffprobe)
-        has_pool = len(self._background_candidates()) >= 2
+        has_pool = bool(self._background_candidates())
         if not has_pool and not s.background_path.is_file():
-            raise ValueError(f"Neither assets/backgrounds or assets (with >=2 mp4s) nor {s.background_path} found")
+            raise ValueError(f"No MP4 in assets/backgrounds, assets or {s.background_path}")
 
     def _background_candidates(self) -> list[Path]:
         for directory in (self.settings.assets_dir / "backgrounds", self.settings.assets_dir):
@@ -53,10 +53,11 @@ class ShortsPipeline:
             return selected, offsets
 
         # Резерв на одиночный фон
-        bg_dur = probe_duration(s.background_path, s)
+        background = videos[0] if videos else s.background_path
+        bg_dur = probe_duration(background, s)
         st = 0.0 if s.loop_background and bg_dur < total_duration else random_start(bg_dur, total_duration, seed)
-        print(f"[VIDEO] Используется одиночный фон: {s.background_path.name}")
-        return [s.background_path], [st]
+        print(f"[VIDEO] Используется одиночный фон: {background.name}")
+        return [background], [st]
 
     async def run(self, text: str, output_path: str | Path | None = None, seed: int | None = None) -> Path:
         s = self.settings

@@ -36,7 +36,11 @@ class BackgroundSelectionTests(unittest.TestCase):
                     fallback.unlink()
                     pipeline.preflight()
                 else:
-                    self.assertEqual(backgrounds, [fallback])
+                    expected_background = (pool if pool_count else assets) / "clip0.mp4" if expected else fallback
+                    self.assertEqual(backgrounds, [expected_background])
+                    if expected:
+                        fallback.unlink()
+                        pipeline.preflight()
                 self.assertEqual(len(backgrounds), len(offsets))
                 self.assertTrue(all(0.0 <= offset <= 40.0 - 24.0 / len(backgrounds) - 0.5 for offset in offsets))
                 self.assertEqual((backgrounds, offsets), pipeline._select_backgrounds(24.0, seed=7))

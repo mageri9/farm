@@ -50,22 +50,42 @@ class ResearcherTests(unittest.TestCase):
             self.assertFalse(researcher._remember(ResearchedFact.model_validate({**FACT, "topic": "Different", "keywords": ["Patriot"]})))
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))[0]["topic"], "Patriot clock drift")
 
-    def test_find_facts_retries_duplicate_from_api(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(FactResearcher, "_verify_sources", new=AsyncMock(return_value=True)):
+    def test_find_facts_rejects_duplicate_without_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
             researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
             researcher.history_path.write_text(json.dumps([FACT["topic"], *[f"Older topic {i}" for i in range(35)]]), encoding="utf-8")
             def completion(fact):
                 response = MagicMock()
                 response.choices[0].message.content = json.dumps(fact)
                 return response
-            researcher.client.chat.completions.create = AsyncMock(side_effect=[completion(FACT), completion({**FACT, "topic": "Mars Climate Orbiter", "keywords": ["MCO"], "title": "Ошибка Mars Climate Orbiter"})])
-            facts = asyncio.run(researcher.find_facts(1, "systems"))
-            self.assertEqual(facts[0]["topic"], "Mars Climate Orbiter")
-            self.assertEqual(researcher.client.chat.completions.create.call_count, 2)
+            researcher.client.chat.completions.create = AsyncMock(return_value=completion(FACT))
+            with self.assertRaisesRegex(ValueError, "Already used"):
+                asyncio.run(researcher.find_facts(1, "systems"))
+            researcher.client.chat.completions.create.assert_awaited_once()
             first_prompt = researcher.client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
-            self.assertNotIn(FACT["topic"], first_prompt)
+            self.assertIn(FACT["topic"], first_prompt)
             self.assertIn("Older topic 34", first_prompt)
-            self.assertEqual(len(json.loads(researcher.history_path.read_text(encoding="utf-8"))), 37)
+            self.assertEqual(len(json.loads(researcher.history_path.read_text(encoding="utf-8"))), 36)
+
+    def test_find_facts_uses_one_json_request_without_fetching_sources(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("httpx.AsyncClient") as http:
+            researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
+            response = MagicMock()
+            response.choices[0].message.content = json.dumps(FACT)
+            researcher.client.chat.completions.create = AsyncMock(return_value=response)
+
+            facts = asyncio.run(researcher.find_facts(1, "systems"))
+
+            self.assertEqual(facts, [FACT])
+            researcher.client.chat.completions.create.assert_awaited_once()
+            request = researcher.client.chat.completions.create.call_args.kwargs
+            self.assertEqual(request["response_format"], {"type": "json_object"})
+            self.assertEqual(request["model"], researcher.model)
+            self.assertEqual(self.sdk.call_args.kwargs["max_retries"], 0)
+            http.assert_not_called()
+            self.assertEqual(json.loads(researcher.history_path.read_text(encoding="utf-8")), [
+                {"topic": FACT["topic"], "keywords": FACT["keywords"], "category": FACT["category"]},
+            ])
 
     def test_corrupt_history_is_not_silently_erased(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -78,7 +98,7 @@ class ResearcherTests(unittest.TestCase):
             researcher.client.chat.completions.create.assert_not_called()
 
     def test_all_balances_categories_and_excludes_current_batch(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(FactResearcher, "_verify_sources", new=AsyncMock(return_value=True)):
+        with tempfile.TemporaryDirectory() as tmp:
             researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
             responses = []
             for category in ("systems", "science", "mind"):
@@ -88,19 +108,31 @@ class ResearcherTests(unittest.TestCase):
             researcher.client.chat.completions.create = AsyncMock(side_effect=responses)
             facts = asyncio.run(researcher.find_facts(3, "all"))
             self.assertEqual([f["category"] for f in facts], ["systems", "science", "mind"])
+            self.assertEqual(researcher.client.chat.completions.create.await_count, 3)
             prompt = researcher.client.chat.completions.create.call_args_list[1].kwargs["messages"][1]["content"]
             self.assertIn("systems event", prompt)
 
-    def test_bad_api_response_retries_without_recording_fact(self):
+    def test_bad_api_response_fails_without_retry_or_recording_fact(self):
+        for content in ('{"topic":"missing fields"}', 'not json', '[]',
+                        json.dumps({**FACT, "category": "science"})):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp:
+                researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
+                response = MagicMock()
+                response.choices[0].message.content = content
+                researcher.client.chat.completions.create = AsyncMock(return_value=response)
+                with self.assertRaises(ValueError):
+                    asyncio.run(researcher.find_facts(1, "systems"))
+                self.assertFalse(researcher.history_path.exists())
+                researcher.client.chat.completions.create.assert_awaited_once()
+
+    def test_api_error_is_propagated_without_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
             researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
-            response = MagicMock()
-            response.choices[0].message.content = '{"topic":"missing fields"}'
-            researcher.client.chat.completions.create = AsyncMock(return_value=response)
-            with self.assertRaises(RuntimeError):
+            researcher.client.chat.completions.create = AsyncMock(side_effect=RuntimeError("API unavailable"))
+            with self.assertRaisesRegex(RuntimeError, "API unavailable"):
                 asyncio.run(researcher.find_facts(1, "systems"))
             self.assertFalse(researcher.history_path.exists())
-            self.assertEqual(researcher.client.chat.completions.create.call_count, 5)
+            researcher.client.chat.completions.create.assert_awaited_once()
 
 
 if __name__ == "__main__":
