@@ -7,32 +7,27 @@ from typing import Any
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, field_validator
 
-# Модель по умолчанию из .env или Claude Sonnet 5
-DEFAULT_MODEL = os.getenv("ANYMODEL_MODEL", "cc/claude-sonnet-5")
+DEFAULT_MODEL = os.getenv("ANYMODEL_MODEL", "ag/gemini-3.7-flash-medium")
 
-SYSTEM_PROMPT = """Ты — ведущий сценарист документальных мини-фильмов в концепции «Реальность страннее выдумки» (научные парадоксы, инженерные катастрофы, сбои систем, когнитивные иллюзии).
+SYSTEM_PROMPT = """Ты — сценарист ультра-динамичных документальных расследований (Shorts/Reels) в формате «Реальность страннее выдумки».
+Твоя задача — превратить сухой факт в напряженную историю ровно на 25 секунд для строгого голоса диктора.
 
-Твоя задача — взять реальный проверенный факт и превратить его в напряженную 40-секундную историю для взрослого диктора-документалиста.
+СТРОГИЕ ПРАВИЛА:
+1. ОБЪЕМ: строго от 45 до 55 слов! Каждое слово на счету. Никакой воды.
+2. СТИЛЬ: короткие, рубленые фразы. Телеграфный ритм. Никаких сложных причастных оборотов и придаточных предложений.
+3. ЧИСЛА: все числительные обязательно пиши словами («триста двадцать семь», «в девяносто девятом году»), иначе синтезатор речи споткнется.
+4. ПОВЕСТВОВАНИЕ: строго от третьего лица (нейтральный хроникер). Никаких «мы», «я», «подпишитесь».
+5. ДРАМАТУРГИЯ (4 ФАЗЫ):
+   - Фаза 1 (1 предложение): Парадокс или шокирующий факт в лоб.
+   - Фаза 2 (1-2 предложения): Исходные данные и масштаб системы.
+   - Фаза 3 (1-2 предложения): Нелепая деталь сбоя или закона физики.
+   - Фаза 4 (1 предложение): Холодный смысловой итог.
 
-СТРОГАЯ СТРУКТУРА (всего 65–80 слов!):
-1. ХУК (0-3 сек / 1 предложение): Парадокс или ломка интуиции. Никаких «Знали ли вы», сразу факт, ломающий шаблон.
-2. КОНТЕКСТ (3-10 сек / 1-2 предложения): Кто, где, масштаб системы или замысла.
-3. МЕХАНИЗМ (10-25 сек / 2-3 предложения): В чем именно крылась неочевидная ошибка или закон природы. Суть сбоя/явления простыми словами.
-4. НАРАСТАНИЕ (25-35 сек / 1-2 предложения): Как ошибка накапливалась незаметно, пока не стало поздно.
-5. ФИНАЛ / ПАНЧ (35-40 сек / 1 предложение): Смысловой итог. Реальность беспощадна к небрежности, либо законы физики не обязаны быть интуитивными.
-
-ПРАВИЛА:
-- Тон холодный, строгий, интеллектуальный (как в документалках Netflix/BBC).
-- Пиши только от третьего лица (нейтральный наблюдатель). Никакого первого лица!
-- Никаких призывов перейти в Telegram или подписаться. Ролик должен быть законченным шедевром.
-- ВСЕ ЧИСЛА ПИШИ СЛОВАМИ для диктора (например: «триста миллионов долларов», «в девяносто девятом году»).
-- Общий объем поля text: СТРОГО от 65 до 80 слов.
-
-ФОРМАТ ВЫВОДА (только валидный JSON):
+ФОРМАТ ВЫВОДА (ТОЛЬКО ЧИСТЫЙ JSON):
 {
-  "title": "Цепляющий заголовок до 6 слов",
-  "text": "Текст диктора без ремарок (65-80 слов)",
-  "tags": ["#наука", "#история", "#технологии", "#факты", "#шортс"]
+  "title": "Емкий заголовок до 5 слов",
+  "text": "Текст диктора строго от 45 до 55 слов",
+  "tags": ["#наука", "#технологии", "#факты", "#история", "#шортс"]
 }
 """
 
@@ -55,9 +50,9 @@ class AdaptedStory(BaseModel):
     def validate_text(cls, value: str) -> str:
         value = value.strip()
         words = len(value.split())
-        # Исправлено: честный надежный диапазон 60-85 слов
-        if not 60 <= words <= 85:
-            raise ValueError(f"Story length is {words} words, required 60-85")
+        # Коридор для динамичного ролика на 22-28 секунд
+        if not 42 <= words <= 60:
+            raise ValueError(f"Story length is {words} words, required 42-60 words for 25s format")
         return value
 
     @field_validator("tags", mode="before")
@@ -66,7 +61,7 @@ class AdaptedStory(BaseModel):
         if isinstance(value, str):
             value = [t.strip() for t in value.split(",")]
         if not isinstance(value, list):
-            value = ["#наука", "#технологии", "#шортс"]
+            value = ["#наука", "#факты", "#шортс"]
 
         clean_tags: list[str] = []
         for tag in value:
@@ -79,7 +74,7 @@ class AdaptedStory(BaseModel):
 
         result = clean_tags[:5]
         while len(result) < 3:
-            result.append("#факты")
+            result.append("#шортс")
         return result
 
 
@@ -91,11 +86,15 @@ class StoryAdapter:
         self.model = model
 
     async def adapt_story(self, original_title: str, original_text: str) -> dict | None:
-        prompt = f"Тема/Фактура: {original_title}\n\nСырые данные о событии/парадоксе:\n{original_text}"
+        prompt = (
+            f"Тема: {original_title}\n\n"
+            f"Фактура: {original_text}\n\n"
+            "Напиши ультра-динамичный сценарий строго на 45-55 слов короткими фразами."
+        )
         try:
             completion = await self.client.chat.completions.create(
                 model=self.model,
-                temperature=0.7,
+                temperature=0.6,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -118,28 +117,3 @@ class StoryAdapter:
         if not isinstance(parsed, dict):
             raise ValueError("Model response is not an object")
         return parsed
-
-    async def generate_story_from_scratch(
-        self, topic: str = "Катастрофа Mars Climate Orbiter из-за единиц измерения"
-    ) -> dict | None:
-        """Генерирует документальный сценарий по реальному факту."""
-        prompt = (
-            f"Напиши документальный сценарий по 5-ступенчатой структуре на тему: '{topic}'. "
-            "Опирайся только на строгие факты. Покажи драму сложной системы или контринтуитивность законов Вселенной."
-        )
-        try:
-            completion = await self.client.chat.completions.create(
-                model=self.model,
-                temperature=0.7,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            content = completion.choices[0].message.content or ""
-            data = self._parse_json(content)
-            return AdaptedStory.model_validate(data).model_dump()
-        except Exception as exc:
-            print(f"[AI ERROR] {type(exc).__name__}: {exc}")
-            return None

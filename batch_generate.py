@@ -83,7 +83,6 @@ def posting_block(index: int, filename: str, story: dict[str, Any], channel_tag:
         tags = " ".join(str(tag).strip() for tag in raw_tags if str(tag).strip())
     else:
         tags = str(raw_tags).strip()
-
     return "\n".join(
         (
             SEPARATOR,
@@ -91,7 +90,7 @@ def posting_block(index: int, filename: str, story: dict[str, Any], channel_tag:
             f"Название: {title}",
             f"Теги: {tags}",
             "Закрепленный комментарий:",
-            f"Полная история без цензуры в закрепе нашего Telegram: {channel_tag}",
+            "Знали об этом факте до видео? Делитесь мнением в комментариях.",
             SEPARATOR,
         )
     )
