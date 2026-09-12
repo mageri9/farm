@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -7,7 +8,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Literal
 
-from openai import AsyncOpenAI
+from openai import APIConnectionError, AsyncOpenAI, InternalServerError, RateLimitError
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from ..runtime import atomic_json, file_lock
@@ -61,8 +62,8 @@ class ResearchedFact(BaseModel):
         return value
 
 
-RESEARCH_PROMPT = """Ты — строгий фактологический исследователь. Верни реальный, строго
-задокументированный факт сразу в виде ровно одного JSON-объекта, без Markdown и пояснений.
+RESEARCH_PROMPT = """Ты — строгий фактологический исследователь. Верни реальные, строго
+задокументированные факты в виде JSON-массива объектов, без Markdown и пояснений.
 Нужны только проверяемые, задокументированные исторические инциденты, сбои сложных систем,
 контринтуитивная физика или эксперименты над восприятием. Обязательны конкретные дата,
 имена систем/участников, локация и измеримые цифры. Запрещены общеизвестные факты из пабликов,
@@ -71,8 +72,8 @@ RESEARCH_PROMPT = """Ты — строгий фактологический ис
 Категории: systems — аварии инфраструктуры, software/hardware, авиация, инженерные ошибки;
 science — космос, гравитация/время, квантовые и природные аномалии;
 mind — когнитивные слепые зоны, иллюзии восприятия, воспроизводимые эксперименты.
-Не повторяй темы из списка исключений даже под другим названием.
-Поля JSON: topic (каноническое английское имя конкретного инцидента/эксперимента), category,
+Не повторяй темы из списка исключений и внутри массива даже под другим названием.
+Поля каждого объекта: topic (каноническое английское имя конкретного инцидента/эксперимента), category,
 title, raw_data, date (с годом цифрами), location, systems (непустой массив имен),
 figures (непустой массив чисел с единицами), keywords (синонимы имени события на русском и английском,
 без общих слов вроде NASA/космос), sources (1-3 объекта с title и url).
@@ -116,21 +117,22 @@ class FactResearcher:
     def _keys(item: dict[str, Any]) -> set[str]:
         return {normalize(s) for s in [item["topic"], *item.get("keywords", [])] if normalize(s)}
 
-    def _remember(self, fact: ResearchedFact) -> bool:
+    def _remember(self, facts: list[ResearchedFact]) -> None:
         with file_lock(self.history_path.with_suffix(".json.lock")):
             items = self._history()
-            entry = {"topic": fact.topic, "keywords": fact.keywords, "category": fact.category}
-            if any(self._keys(entry) & self._keys(old) for old in items):
-                return False
-            atomic_json(self.history_path, [*items, entry])
-            return True
+            for fact in facts:
+                entry = {"topic": fact.topic, "keywords": fact.keywords, "category": fact.category}
+                if any(self._keys(entry) & self._keys(old) for old in items):
+                    raise ValueError(f"Already used: {fact.topic}")
+                items.append(entry)
+            atomic_json(self.history_path, items)
 
     @staticmethod
-    def _parse(content: str) -> dict[str, Any]:
+    def _parse(content: str) -> list[dict[str, Any]]:
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.I)
         data = json.loads(content)
-        if not isinstance(data, dict):
-            raise ValueError("fact response must be an object")
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("fact response must be an array of objects")
         return data
 
     async def find_facts(self, count: int, category: str = "all") -> list[dict[str, Any]]:
@@ -138,24 +140,37 @@ class FactResearcher:
             raise ValueError("count must be positive")
         if category != "all" and category not in CATEGORIES:
             raise ValueError(f"unsupported category: {category}")
-        result: list[dict[str, Any]] = []
-        for index in range(count):
-            requested = CATEGORIES[index % len(CATEGORIES)] if category == "all" else category
-            history = self._history()
-            prompt = f"Категория: {requested}. Исключения: {json.dumps(history, ensure_ascii=False)}."
-            print(f"[RESEARCH {index + 1}/{count}] {requested}", flush=True)
-            completion = await self.client.chat.completions.create(
-                model=self.model, temperature=0.8, response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": RESEARCH_PROMPT}, {"role": "user", "content": prompt}],
-            )
-            fact = ResearchedFact.model_validate(self._parse(completion.choices[0].message.content or ""))
+        categories = [CATEGORIES[index % len(CATEGORIES)] if category == "all" else category for index in range(count)]
+        history = self._history()
+        prompt = (
+            f"Верни ровно {count} уникальных задокументированных фактов по категориям "
+            f"в виде JSON-массива. Категории объектов по порядку: {json.dumps(categories)}. "
+            f"Исключения: {json.dumps(history, ensure_ascii=False)}."
+        )
+        for attempt in range(3):
+            print(f"[RESEARCH] {count} фактов, попытка {attempt + 1}/3", flush=True)
+            try:
+                completion = await self.client.chat.completions.create(
+                    model=self.model, temperature=0.8,
+                    messages=[{"role": "system", "content": RESEARCH_PROMPT}, {"role": "user", "content": prompt}],
+                )
+                break
+            except (InternalServerError, APIConnectionError, RateLimitError):
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2)
+
+        data = self._parse(completion.choices[0].message.content or "")
+        if len(data) != count:
+            raise ValueError(f"Expected {count} facts, received {len(data)}")
+        facts = [ResearchedFact.model_validate(item) for item in data]
+        for fact, requested in zip(facts, categories):
             if fact.category != requested:
                 raise ValueError(f"Required category: {requested}")
-            if not self._remember(fact):
-                raise ValueError(f"Already used: {fact.topic}")
-            result.append(fact.model_dump(mode="json"))
+        self._remember(facts)
+        for fact in facts:
             print(f"[FACT] {fact.title}\n{fact.raw_data}", flush=True)
-        return result
+        return [fact.model_dump(mode="json") for fact in facts]
 
     async def close(self) -> None:
         await self.client.close()
