@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import shutil
 import subprocess
-import math
 from pathlib import Path
+from typing import Sequence
 
 from .config import Settings
 from .subtitles import escape_subtitle_path
@@ -29,7 +30,9 @@ def check_executable(name: str) -> str:
 
 def _run_probe(args: list[str], timeout: float = 30.0) -> dict:
     try:
-        result = subprocess.run(args, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        result = subprocess.run(
+            args, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
+        )
         return json.loads(result.stdout)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
         raise VideoError(f"ffprobe failed: {exc}") from exc
@@ -37,7 +40,10 @@ def _run_probe(args: list[str], timeout: float = 30.0) -> dict:
 
 def probe_duration(path: Path, settings: Settings | None = None) -> float:
     s = settings or Settings()
-    data = _run_probe([check_executable(s.ffprobe), "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)], s.probe_timeout)
+    data = _run_probe(
+        [check_executable(s.ffprobe), "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)],
+        s.probe_timeout,
+    )
     try:
         value = float(data["format"]["duration"])
         if not math.isfinite(value) or value <= 0:
@@ -47,38 +53,93 @@ def probe_duration(path: Path, settings: Settings | None = None) -> float:
         raise VideoError(f"Could not determine duration of {path}") from exc
 
 
-def get_audio_duration(audio_path: Path) -> float:
-    """Return duration via ffprobe using a descriptive public API."""
-    return probe_duration(audio_path)
-
-
-def random_start(background_duration: float, audio_duration: float, seed: int | None = None) -> float:
-    if background_duration + 1e-6 < audio_duration:
-        raise VideoError(f"Background video is too short. Required {audio_duration:.1f} sec; Available {background_duration:.1f} sec")
+def random_start(background_duration: float, segment_duration: float, seed: int | None = None) -> float:
+    if background_duration + 1e-6 < segment_duration:
+        return 0.0
     rng = random.Random(seed)
-    # Keep a small tail of the source untouched so rounding/encoder delay does
-    # not make the selected segment run past the background's final frame.
-    available = max(0.0, background_duration - audio_duration - 0.5)
+    available = max(0.0, background_duration - segment_duration - 0.5)
     return rng.uniform(0.0, available)
 
 
-def render_video(background: Path, audio: Path, subtitles: Path, output: Path, duration: float, start: float, settings: Settings) -> None:
+def render_video(
+    backgrounds: Sequence[Path] | Path,
+    audio: Path,
+    subtitles: Path,
+    output: Path,
+    duration: float,
+    start_offsets: Sequence[float] | float,
+    settings: Settings,
+) -> None:
     executable = check_executable(settings.ffmpeg)
     subtitle_path = escape_subtitle_path(subtitles)
     fonts_dir = escape_subtitle_path(settings.assets_dir / "fonts")
     subtitle_filter = f"subtitles='{subtitle_path}':fontsdir='{fonts_dir}'"
-    vf = ("crop=trunc(ih*9/16/2)*2:ih:(iw-ow)/2:0,"
-          f"scale={settings.video_width}:{settings.video_height},setpts=PTS-STARTPTS,{subtitle_filter}")
+
+    bg_list = [backgrounds] if isinstance(backgrounds, Path) else list(backgrounds)
+    starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
+
     cmd = [executable, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
-    if settings.loop_background:
-        cmd += ["-stream_loop", "-1"]
-    cmd += ["-ss", f"{start:.3f}",
-           "-i", str(background), "-i", str(audio), "-t", f"{duration:.3f}", "-vf", vf, "-map", "0:v:0", "-map", "1:a:0",
-           "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf), "-r", str(settings.fps),
-           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", settings.audio_bitrate, "-movflags", "+faststart", "-shortest", str(output)]
+
+    crop_scale = (
+        f"crop=trunc(ih*9/16/2)*2:ih:(iw-ow)/2:0,"
+        f"scale={settings.video_width}:{settings.video_height},setsar=1,fps={settings.fps}"
+    )
+
+    if len(bg_list) <= 1:
+        # Одиночный фон (классический режим)
+        bg = bg_list[0]
+        st = starts[0] if starts else 0.0
+        if settings.loop_background:
+            cmd += ["-stream_loop", "-1"]
+        cmd += ["-ss", f"{st:.3f}", "-i", str(bg), "-i", str(audio)]
+        vf = f"{crop_scale},setpts=PTS-STARTPTS,{subtitle_filter}"
+        cmd += ["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        # Мульти-клип: жесткий стык планов через trim
+        cut_duration = duration / len(bg_list)
+        filter_complex = []
+        concat_inputs = ""
+
+        for idx, bg in enumerate(bg_list):
+            st = starts[idx] if idx < len(starts) else 0.0
+            dur = (
+                cut_duration
+                if idx < len(bg_list) - 1
+                else (duration - cut_duration * idx)
+            )
+            cmd += ["-stream_loop", "-1", "-ss", f"{st:.3f}", "-i", str(bg)]
+            filter_complex.append(
+                f"[{idx}:v]trim=duration={dur:.3f},{crop_scale},setpts=PTS-STARTPTS[v{idx}];"
+            )
+            concat_inputs += f"[v{idx}]"
+
+        audio_idx = len(bg_list)
+        cmd += ["-i", str(audio)]
+        # Keep concat and subtitles in one chain so the labelled output remains connected.
+        filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{subtitle_filter}[vout]")
+
+        cmd += [
+            "-filter_complex",
+            "".join(filter_complex),
+            "-map",
+            "[vout]",
+            "-map",
+            f"{audio_idx}:a:0",
+        ]
+
+    cmd += [
+        "-t", f"{duration:.3f}",
+        "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf),
+        "-r", str(settings.fps), "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", settings.audio_bitrate,
+        "-movflags", "+faststart", "-shortest", str(output),
+    ]
+
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=settings.render_timeout)
+        subprocess.run(
+            cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=settings.render_timeout
+        )
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()[-8:]
         raise VideoError("FFmpeg render failed:\n" + "\n".join(detail)) from exc
@@ -91,7 +152,10 @@ def render_video(background: Path, audio: Path, subtitles: Path, output: Path, d
 def validate_output(path: Path, settings: Settings, expected_duration: float | None = None) -> dict:
     if not path.exists() or path.stat().st_size == 0:
         raise VideoError("Output validation failed: file is missing or empty.")
-    data = _run_probe([check_executable(settings.ffprobe), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)], settings.probe_timeout)
+    data = _run_probe(
+        [check_executable(settings.ffprobe), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+        settings.probe_timeout,
+    )
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)

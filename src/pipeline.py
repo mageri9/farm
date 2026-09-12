@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import shutil
 import tempfile
 import time
@@ -24,9 +25,38 @@ class ShortsPipeline:
         s = self.settings
         check_executable(s.ffmpeg)
         check_executable(s.ffprobe)
-        if not s.background_path.is_file():
-            raise ValueError(f"Background video not found: {s.background_path}")
-        probe_duration(s.background_path, s)
+        has_pool = len(self._background_candidates()) >= 2
+        if not has_pool and not s.background_path.is_file():
+            raise ValueError(f"Neither assets/backgrounds or assets (with >=2 mp4s) nor {s.background_path} found")
+
+    def _background_candidates(self) -> list[Path]:
+        for directory in (self.settings.assets_dir / "backgrounds", self.settings.assets_dir):
+            videos = sorted(path for path in directory.glob("*.mp4") if path.is_file())
+            if videos:
+                return videos
+        return []
+
+    def _select_backgrounds(self, total_duration: float, seed: int | None = None) -> tuple[list[Path], list[float]]:
+        s = self.settings
+        # Ищем mp4 в assets/backgrounds/, а если пусто — прямо в assets/
+        videos = self._background_candidates()
+
+        if len(videos) >= 2:
+            rng = random.Random(seed)
+            selected = rng.sample(videos, 2)
+            half_dur = total_duration / 2.0
+            offsets = []
+            for bg in selected:
+                dur = probe_duration(bg, s)
+                offsets.append(random_start(dur, half_dur, seed))
+            print(f"[VIDEO] Найдено {len(videos)} видео. Для ролика выбраны 2 плана: {selected[0].name} -> {selected[1].name}")
+            return selected, offsets
+
+        # Резерв на одиночный фон
+        bg_dur = probe_duration(s.background_path, s)
+        st = 0.0 if s.loop_background and bg_dur < total_duration else random_start(bg_dur, total_duration, seed)
+        print(f"[VIDEO] Используется одиночный фон: {s.background_path.name}")
+        return [s.background_path], [st]
 
     async def run(self, text: str, output_path: str | Path | None = None, seed: int | None = None) -> Path:
         s = self.settings
@@ -41,11 +71,9 @@ class ShortsPipeline:
         output = output.resolve()
         if output.suffix.lower() != ".mp4":
             raise ValueError("Output must have an .mp4 extension")
-        if output == s.background_path.resolve():
-            raise ValueError("Output must not overwrite the background")
         output.parent.mkdir(parents=True, exist_ok=True)
         s.work_dir.mkdir(parents=True, exist_ok=True)
-        # A sibling partial file makes the final replacement atomic on Windows too.
+
         partial = output.with_name(f".{output.stem}.{uuid4().hex}.partial.mp4")
         with file_lock(output.with_suffix(".mp4.lock")):
             run_dir = Path(tempfile.mkdtemp(prefix="run_", dir=s.work_dir))
@@ -66,11 +94,11 @@ class ShortsPipeline:
                 event("tts.completed", words=len(boundaries), seconds=round(time.monotonic() - started, 3))
                 write_ass(boundaries, ass, s.words_per_subtitle, s.font_name, s.font_size, s.assets_dir / "fonts")
                 duration = probe_duration(audio, s)
-                background_duration = probe_duration(s.background_path, s)
-                start = 0.0 if s.loop_background and background_duration < duration else random_start(background_duration, duration, seed)
-                event("render.started", output=output, duration=duration)
-                # The blocking runner owns/reaps FFmpeg on timeout or Ctrl+C.
-                render_video(s.background_path, audio, ass, partial, duration, start, s)
+
+                bg_list, start_offsets = self._select_backgrounds(duration, seed)
+
+                event("render.started", output=output, duration=duration, clips=len(bg_list))
+                render_video(bg_list, audio, ass, partial, duration, start_offsets, s)
                 self.last_report = validate_output(partial, s, expected_duration=duration)
                 os.replace(partial, output)
                 event("render.completed", output=output, seconds=round(time.monotonic() - started, 3), report=self.last_report)
