@@ -7,6 +7,8 @@ from typing import Any
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, field_validator
 
+from ..runtime import safe_error
+
 DEFAULT_MODEL = os.getenv("ANYMODEL_MODEL", "ag/gemini-3.7-flash-medium")
 
 SYSTEM_PROMPT = """Ты — сценарист ультра-динамичных документальных расследований (Shorts/Reels) в формате «Реальность страннее выдумки».
@@ -50,9 +52,10 @@ class AdaptedStory(BaseModel):
     def validate_text(cls, value: str) -> str:
         value = value.strip()
         words = len(value.split())
-        # Коридор для динамичного ролика на 22-28 секунд
-        if not 42 <= words <= 60:
-            raise ValueError(f"Story length is {words} words, required 42-60 words for 25s format")
+        if not 45 <= words <= 55:
+            raise ValueError(f"Story length is {words} words, required 45-55 words for 25s format")
+        if re.search(r"\d", value):
+            raise ValueError("Write all numbers in words, including dates and system names")
         return value
 
     @field_validator("tags", mode="before")
@@ -79,11 +82,11 @@ class AdaptedStory(BaseModel):
 
 
 class StoryAdapter:
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
+    def __init__(self, api_key: str, model: str | None = None) -> None:
         if not api_key:
             raise ValueError("ANYMODEL_API_KEY is not set")
-        self.client = AsyncOpenAI(api_key=api_key, base_url="https://anymodel.org/v1")
-        self.model = model
+        self.client = AsyncOpenAI(api_key=api_key, base_url="https://anymodel.org/v1", timeout=90.0)
+        self.model = model or os.getenv("ANYMODEL_MODEL") or DEFAULT_MODEL
 
     async def adapt_story(self, original_title: str, original_text: str) -> dict | None:
         prompt = (
@@ -91,22 +94,31 @@ class StoryAdapter:
             f"Фактура: {original_text}\n\n"
             "Напиши ультра-динамичный сценарий строго на 45-55 слов короткими фразами."
         )
-        try:
-            completion = await self.client.chat.completions.create(
-                model=self.model,
-                temperature=0.6,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            content = completion.choices[0].message.content or ""
-            data = self._parse_json(content)
-            return AdaptedStory.model_validate(data).model_dump()
-        except Exception as exc:
-            print(f"[AI ERROR] {type(exc).__name__}: {exc}")
-            return None
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        for attempt in range(3):
+            content = ""
+            try:
+                completion = await self.client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.6,
+                    response_format={"type": "json_object"},
+                    messages=messages,
+                )
+                content = completion.choices[0].message.content or ""
+                return AdaptedStory.model_validate(self._parse_json(content)).model_dump()
+            except ValueError as exc:
+                print(f"[SCRIPT {attempt + 1}/3] Ответ не прошел проверку; исправляем длину/формат.", flush=True)
+                messages.extend([
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": f"Исправь JSON: {exc}. Строго 45-55 слов, без цифр. Не добавляй фактов."},
+                ])
+            except Exception as exc:
+                print(f"[AI ERROR] {safe_error(exc)}", flush=True)
+                return None
+        return None
 
     @staticmethod
     def _parse_json(content: str) -> dict[str, Any]:
