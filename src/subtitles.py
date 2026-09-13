@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -20,7 +21,18 @@ def group_words(words: Iterable[WordBoundary], words_per_subtitle: int = 2) -> l
     if words_per_subtitle < 1:
         raise ValueError("words_per_subtitle must be >= 1")
     clean = [w for w in words if w.word and w.end >= w.start]
-    return [clean[i : i + words_per_subtitle] for i in range(0, len(clean), words_per_subtitle)]
+    groups: list[list[WordBoundary]] = []
+    current: list[WordBoundary] = []
+    for word in clean:
+        current.append(word)
+        # Sentence-final punctuation may be followed by closing quotes/brackets.
+        sentence_end = bool(re.search(r"[.!?\u2026][\"'\u00bb\u201d\u2019\u201c)}\]]*\s*$", word.word))
+        if len(current) >= words_per_subtitle or sentence_end:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _escape_ass_text(text: str) -> str:
