@@ -23,11 +23,15 @@ def group_words(words: Iterable[WordBoundary], words_per_subtitle: int = 2) -> l
     clean = [w for w in words if w.word and w.end >= w.start]
     groups: list[list[WordBoundary]] = []
     current: list[WordBoundary] = []
-    for word in clean:
+    for index, word in enumerate(clean):
         current.append(word)
+        # Edge-TTS may strip punctuation; treat capitals as sentence starts.
+        next_word = clean[index + 1].word if index + 1 < len(clean) else ""
+        cleaned_next_word = next_word.lstrip(" \t\r\n\"'\u00ab\u00bb\u201c\u201d\u201e\u2018\u2019([{\u2039\u203a")
+        next_sentence = bool(cleaned_next_word and cleaned_next_word[0].isupper())
         # Sentence-final punctuation may be followed by closing quotes/brackets.
         sentence_end = bool(re.search(r"[.!?\u2026][\"'\u00bb\u201d\u2019\u201c)}\]]*\s*$", word.word))
-        if len(current) >= words_per_subtitle or sentence_end:
+        if len(current) >= words_per_subtitle or sentence_end or next_sentence:
             groups.append(current)
             current = []
     if current:

@@ -22,6 +22,7 @@ class Settings:
     cleanup_work: bool = True
     root: Path = Path(__file__).resolve().parent.parent
     background: Path | None = None
+    ambient_audio: Path | None = None
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     probe_timeout: float = 30.0
@@ -37,6 +38,8 @@ class Settings:
         self.root = Path(self.root)
         if self.background is not None:
             self.background = Path(self.background)
+        if self.ambient_audio is not None:
+            self.ambient_audio = Path(self.ambient_audio)
         for name in ("probe_timeout", "render_timeout", "tts_timeout", "request_timeout"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
@@ -68,7 +71,7 @@ class Settings:
                 if raw.lower() not in {"true", "false", "1", "0"}:
                     raise ValueError(f"SHORTS_{field.name.upper()} must be true or false")
                 values[field.name] = raw.lower() in {"true", "1"}
-            elif field.name in {"root", "background"}:
+            elif field.name in {"root", "background", "ambient_audio"}:
                 values[field.name] = Path(raw)
             else:
                 values[field.name] = type(default)(raw)
@@ -84,6 +87,12 @@ class Settings:
         if self.background is not None:
             return self.background if self.background.is_absolute() else self.root / self.background
         return self.assets_dir / "background.mp4"
+
+    @property
+    def ambient_path(self) -> Path:
+        if self.ambient_audio is not None:
+            return self.ambient_audio if self.ambient_audio.is_absolute() else self.root / self.ambient_audio
+        return self.assets_dir / "audio" / "ambient.mp3"
 
     @property
     def output_dir(self) -> Path:

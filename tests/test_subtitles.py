@@ -32,6 +32,32 @@ class SubtitleTests(unittest.TestCase):
         self.assertIn("0:00:01.00,0:00:01.80", text)
         self.assertIn("hello world", text)
 
+    def test_capitalized_next_word_starts_a_new_chunk_without_punctuation(self):
+        for prefix in ("", '"', "'", "\u00ab", "(", "[", "{", "\u201e", " \u201c("):
+            for size in (2, 4):
+                with self.subTest(prefix=prefix, size=size):
+                    words = [WordBoundary("\u043a\u0440\u044b\u0448\u0443", 1.0, 1.2),
+                             WordBoundary(prefix + "\u041d\u0430", 1.5, 1.7),
+                             WordBoundary("\u0431\u043e\u0440\u0442\u0443", 1.8, 2.0)]
+                    self.assertEqual(group_words(iter(words), size), [words[:1], words[1:]])
+
+    def test_terminal_punctuation_still_closes_chunks(self):
+        for ending in (".", "!", "?", '."', "!\u00bb", "?)"):
+            with self.subTest(ending=ending):
+                words = [WordBoundary("end" + ending, 0, 0.5), WordBoundary("next", 0.7, 1)]
+                self.assertEqual(group_words(words, 4), [[words[0]], [words[1]]])
+
+    def test_capitalized_words_never_follow_another_word_in_a_chunk(self):
+        words = [WordBoundary(word, i, i + 0.5) for i, word in
+                 enumerate(["first", "Second", "Third", "last", "Fourth"])]
+        groups = group_words(words, 5)
+        self.assertEqual(groups, [words[:1], words[1:2], words[2:4], words[4:]])
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "test.ass"
+            write_ass(words, target, words_per_subtitle=5)
+            text = target.read_text(encoding="utf-8")
+        self.assertIn("0:00:02.00,0:00:03.50,Default,,0,0,0,,Third last", text)
+
     def test_escape_subtitle_path_for_windows_filter(self):
         escaped = escape_subtitle_path(Path("D:/folder with space/sub,one.ass"))
         self.assertIn(r"D\:/", escaped)

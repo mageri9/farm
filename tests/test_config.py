@@ -1,4 +1,6 @@
 import unittest
+import os
+from unittest.mock import patch
 from pathlib import Path
 
 from src.config import Settings
@@ -16,7 +18,20 @@ class ConfigTests(unittest.TestCase):
         settings = Settings(fps=60, words_per_subtitle=3)
         self.assertEqual((settings.fps, settings.words_per_subtitle), (60, 3))
 
+    def test_ambient_paths(self):
+        root = Path.cwd()
+        self.assertEqual(Settings(root=root).ambient_path, root / "assets/audio/ambient.mp3")
+        self.assertEqual(Settings(root=root, ambient_audio="music/bed.mp3").ambient_path,
+                         root / "music/bed.mp3")
+        self.assertEqual(Settings(root=root, ambient_audio=root / "bed.mp3").ambient_path,
+                         root / "bed.mp3")
+
+    @patch("src.config.load_dotenv")
+    def test_ambient_path_from_env(self, _load_dotenv):
+        with patch.dict(os.environ, {"SHORTS_AMBIENT_AUDIO": "music/bed.mp3"}, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.ambient_path, settings.root / "music/bed.mp3")
+
 
 if __name__ == "__main__":
     unittest.main()
-

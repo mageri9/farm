@@ -78,6 +78,8 @@ def render_video(
 
     bg_list = [backgrounds] if isinstance(backgrounds, Path) else list(backgrounds)
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
+    ambient = settings.ambient_path
+    has_ambient = ambient.is_file()
 
     cmd = [executable, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
 
@@ -96,8 +98,18 @@ def render_video(
         if settings.loop_background:
             cmd += ["-stream_loop", "-1"]
         cmd += ["-ss", f"{st:.3f}", "-i", str(bg), "-i", str(audio)]
+        if has_ambient:
+            cmd += ["-stream_loop", "-1", "-i", str(ambient)]
         vf = f"{crop_scale},setpts=PTS-STARTPTS,{subtitle_filter}"
-        cmd += ["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"]
+        if has_ambient:
+            cmd += [
+                "-vf", vf, "-filter_complex",
+                "[2:a]volume=0.08[amb];"
+                "[1:a][amb]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                "-map", "0:v:0", "-map", "[aout]",
+            ]
+        else:
+            cmd += ["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"]
     else:
         # Мульти-клип: жесткий стык планов через trim
         cut_duration = duration / len(bg_list)
@@ -119,8 +131,16 @@ def render_video(
 
         audio_idx = len(bg_list)
         cmd += ["-i", str(audio)]
+        ambient_idx = audio_idx + 1
+        if has_ambient:
+            cmd += ["-stream_loop", "-1", "-i", str(ambient)]
         # Keep concat and subtitles in one chain so the labelled output remains connected.
         filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{subtitle_filter}[vout]")
+        if has_ambient:
+            filter_complex.append(
+                f";[{ambient_idx}:a]volume=0.08[amb];"
+                f"[{audio_idx}:a][amb]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            )
 
         cmd += [
             "-filter_complex",
@@ -128,7 +148,7 @@ def render_video(
             "-map",
             "[vout]",
             "-map",
-            f"{audio_idx}:a:0",
+            "[aout]" if has_ambient else f"{audio_idx}:a:0",
         ]
 
     cmd += [
