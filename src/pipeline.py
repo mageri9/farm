@@ -88,6 +88,13 @@ class ShortsPipeline:
                     try:
                         async with asyncio.timeout(s.tts_timeout):
                             boundaries = await generate_tts(text, audio, s.voice, s.rate)
+                        duration = probe_duration(audio, s)
+                        if duration > 26.5:
+                            event("tts.duration_rejected", duration=duration, limit=26.5, output=output)
+                            raise TTSError(
+                                "Previous script exceeded the TTS duration limit. "
+                                "Rewrite it shorter, simpler and more conversational."
+                            )
                         break
                     except (TTSError, TimeoutError) as exc:
                         event("tts.failed", attempt=attempt + 1, error=safe_error(exc), output=output)
@@ -96,7 +103,6 @@ class ShortsPipeline:
                         await asyncio.sleep(min(60, s.retry_delay * 2 ** attempt))
                 event("tts.completed", words=len(boundaries), seconds=round(time.monotonic() - started, 3))
                 write_ass(boundaries, ass, s.words_per_subtitle, s.font_name, s.font_size, s.assets_dir / "fonts")
-                duration = probe_duration(audio, s)
 
                 bg_list, start_offsets = self._select_backgrounds(duration, seed)
 

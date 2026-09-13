@@ -18,7 +18,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(len(story.text.split()), 50)
 
     def test_adapted_story_rejects_wrong_word_count(self) -> None:
-        for word_count in (44, 56):
+        for word_count in (41, 51):
             with self.subTest(word_count=word_count), self.assertRaises(ValueError):
                 AdaptedStory(
                     title="Неверная длина",
