@@ -36,20 +36,22 @@ class ShortsPipeline:
                 return videos
         return []
 
-    def _select_backgrounds(self, total_duration: float, seed: int | None = None) -> tuple[list[Path], list[float]]:
+    def _select_backgrounds(self, total_duration: float, seed: int | None = None, target_clips: int = 4) -> tuple[list[Path], list[float]]:
         s = self.settings
+        if target_clips < 1:
+            raise ValueError("target_clips must be positive")
         # Ищем mp4 в assets/backgrounds/, а если пусто — прямо в assets/
         videos = self._background_candidates()
 
-        if len(videos) >= 2:
+        if videos:
             rng = random.Random(seed)
-            selected = rng.sample(videos, 2)
-            half_dur = total_duration / 2.0
+            selected = rng.sample(videos, target_clips) if len(videos) >= target_clips else rng.choices(videos, k=target_clips)
+            clip_duration = total_duration / target_clips
             offsets = []
-            for bg in selected:
+            for idx, bg in enumerate(selected):
                 dur = probe_duration(bg, s)
-                offsets.append(random_start(dur, half_dur, seed))
-            print(f"[VIDEO] Найдено {len(videos)} видео. Для ролика выбраны 2 плана: {selected[0].name} -> {selected[1].name}")
+                offsets.append(random_start(dur, clip_duration, None if seed is None else seed + idx))
+            print(f"[VIDEO] Найдено {len(videos)} видео. Для ролика выбраны {target_clips} плана: " + " -> ".join(p.name for p in selected))
             return selected, offsets
 
         # Резерв на одиночный фон

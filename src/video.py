@@ -69,11 +69,12 @@ def render_video(
     duration: float,
     start_offsets: Sequence[float] | float,
     settings: Settings,
+    target_clips: int = 4,
 ) -> None:
     executable = check_executable(settings.ffmpeg)
     subtitle_path = escape_subtitle_path(subtitles)
     fonts_dir = escape_subtitle_path(settings.assets_dir / "fonts")
-    subtitle_filter = f"subtitles='{subtitle_path}':fontsdir='{fonts_dir}'"
+    subtitle_filter = f"ass='{subtitle_path}':fontsdir='{fonts_dir}'"
 
     bg_list = [backgrounds] if isinstance(backgrounds, Path) else list(backgrounds)
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
@@ -85,6 +86,8 @@ def render_video(
         f"scale={settings.video_width}:{settings.video_height},setsar=1,fps={settings.fps}"
     )
 
+    if target_clips < 1:
+        raise ValueError("target_clips must be positive")
     if len(bg_list) <= 1:
         # Одиночный фон (классический режим)
         bg = bg_list[0]
