@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from src.content.adapter import DEFAULT_MODEL, StoryAdapter
+from src.runtime import atomic_text, batch_status, log_failure
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_FACTS = PROJECT_ROOT / "seed_facts.json"
@@ -21,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_FACTS,
         help="JSON-файл с фактами (по умолчанию: seed_facts.json)",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--model", default=None, help="LLM model (default: PRIMARY_MODEL / ANYMODEL_MODEL)")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     return parser.parse_args()
 
@@ -37,7 +38,11 @@ async def run(args: argparse.Namespace) -> int:
         print(f"[ERROR] Файл с фактами не найден: {args.facts}")
         return 2
 
-    raw_facts = json.loads(args.facts.read_text(encoding="utf-8"))
+    try:
+        raw_facts = json.loads(args.facts.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log_failure("content", exc)
+        return 2
     if not isinstance(raw_facts, list) or not raw_facts:
         print("[ERROR] seed_facts.json должен содержать непустой массив")
         return 2
@@ -47,23 +52,32 @@ async def run(args: argparse.Namespace) -> int:
 
     print(f"[START] Адаптируем {len(raw_facts)} фактов в документальные сценарии...\n")
 
-    for i, fact in enumerate(raw_facts, start=1):
-        title = fact.get("title", f"Факт {i}")
-        raw_data = fact.get("raw_data", "")
-        print(f"[{i}/{len(raw_facts)}] Обработка: \"{title}\"...")
-
-        adapted = await adapter.adapt_story(title, raw_data)
-        if adapted:
-            adapted["category"] = fact.get("category", "general")
+    try:
+        for i, fact in enumerate(raw_facts, start=1):
+            print(f"[{i}/{len(raw_facts)}] Processing item {i}")
+            try:
+                if not isinstance(fact, dict):
+                    raise ValueError("Fact must be a JSON object")
+                adapted = await adapter.adapt_story(fact.get("title", f"Fact {i}"), fact.get("raw_data", ""))
+                if not adapted:
+                    error = getattr(adapter, "last_error", None)
+                    raise RuntimeError("Fact adaptation failed") from (error if isinstance(error, Exception) else None)
+                adapted["category"] = fact.get("category", "general")
+            except Exception as exc:
+                log_failure("adaptation", exc, item=i)
+                continue
             stories.append(adapted)
-            print(f"       -> Успешно ({len(adapted['text'].split())} слов)")
-        else:
-            print(f"       -> [ОШИБКА] Не удалось адаптировать: {title}")
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(stories, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n[SUCCESS] Успешно сохранено {len(stories)} сценариев в {args.output}")
-    return 0
+            atomic_text(args.output, json.dumps(stories, ensure_ascii=False, indent=2))
+        if not stories and not args.output.exists():
+            atomic_text(args.output, "[]")
+        status = batch_status(len(stories), len(raw_facts))
+        print(f"\n[{status}] Saved {len(stories)}/{len(raw_facts)} stories: {args.output}")
+        return 0 if status == "SUCCESS" else 1
+    finally:
+        try:
+            await adapter.client.close()
+        except Exception as exc:
+            log_failure("client.close", exc)
 
 
 def main() -> int:

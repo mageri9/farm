@@ -4,7 +4,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
+import traceback
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,13 +16,44 @@ logger = logging.getLogger("shorts")
 
 def safe_error(exc: BaseException) -> str:
     # SDK errors may include credentials or response bodies.
-    from .video import VideoError
-    from .tts import TTSError
-    message = str(exc) if type(exc) in (ValueError, RuntimeError, VideoError, TTSError, FileNotFoundError) else type(exc).__name__
+    from openai import APIStatusError
+    from pydantic import ValidationError
+
+    if isinstance(exc, ValidationError):
+        message = json.dumps(exc.errors(include_input=False, include_context=False, include_url=False))
+    elif isinstance(exc, APIStatusError):
+        # Do not dump the SDK's response body (which may echo a full request).
+        message = f"HTTP {exc.status_code}: {exc.response.reason_phrase}"
+    else:
+        message = str(exc)
     for key, value in os.environ.items():
         if value and len(value) >= 4 and any(word in key.upper() for word in ("KEY", "TOKEN", "PASSWORD", "SECRET")):
             message = message.replace(value, "[REDACTED]")
-    return message[:2000]
+    message = re.sub(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+", r"\1[REDACTED]", message)
+    message = re.sub(r"(?i)(['\"]?authorization['\"]?\s*[:=]\s*['\"])[^'\"]+", r"\1[REDACTED]", message)
+    message = re.sub(r"(?i)(['\"]?(?:api[_-]?key|token|password|secret)['\"]?\s*[:=]\s*['\"])[^'\"]+", r"\1[REDACTED]", message)
+    message = re.sub(r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;&]+", r"\1[REDACTED]", message)
+    return f"{type(exc).__name__}: {message[:2000]}"
+
+
+def log_failure(stage: str, exc: Exception, **identity) -> dict:
+    # Keep frame locations and exception chains, without locals, source lines or SDK payloads.
+    frames = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        frames.append(safe_error(current))
+        frames.extend(f"  {f.filename}:{f.lineno} in {f.name}" for f in traceback.extract_tb(current.__traceback__))
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    details = {"stage": stage, **identity, "error": safe_error(exc), "traceback": "\n".join(frames)}
+    logger.error("Item failure at %s (%s): %s\n%s", stage, identity, details["error"],
+                 details["traceback"], extra={"details": details})
+    return details
+
+
+def batch_status(successful: int, total: int) -> str:
+    return "FAILED" if successful == 0 else "SUCCESS" if successful == total else "PARTIAL_SUCCESS"
 
 
 class JsonFormatter(logging.Formatter):

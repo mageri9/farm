@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -8,12 +7,14 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Literal
 
-from openai import APIConnectionError, AsyncOpenAI, InternalServerError, RateLimitError
+from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from ..runtime import atomic_json, file_lock
+from ..config import llm_models
+from .llm import complete_with_fallback
 
-DEFAULT_MODEL = os.getenv("ANYMODEL_MODEL", "ag/gemini-3.7-flash-medium")
+DEFAULT_MODEL = llm_models()[0]
 CATEGORIES = ("systems", "science", "mind")
 
 
@@ -97,7 +98,8 @@ class FactResearcher:
         if not key:
             raise ValueError("ANYMODEL_API_KEY is not set")
         self.client = AsyncOpenAI(api_key=key, base_url="https://anymodel.org/v1", timeout=90.0, max_retries=0)
-        self.model = model or os.getenv("ANYMODEL_MODEL") or DEFAULT_MODEL
+        primary, self.fallback_model = llm_models()
+        self.model = model or primary
         self.history_path = Path(history_path) if history_path is not None else Path(__file__).resolve().parents[2] / "work/facts_history.json"
 
     def _history(self) -> list[dict[str, Any]]:
@@ -154,18 +156,14 @@ class FactResearcher:
             f"в виде JSON-массива. Категории объектов по порядку: {json.dumps(categories)}. "
             f"Исключения: {json.dumps(history, ensure_ascii=False)}."
         )
-        for attempt in range(3):
-            print(f"[RESEARCH] {count} фактов, попытка {attempt + 1}/3", flush=True)
-            try:
-                completion = await self.client.chat.completions.create(
-                    model=self.model, temperature=0.8,
-                    messages=[{"role": "system", "content": RESEARCH_PROMPT}, {"role": "user", "content": prompt}],
-                )
-                break
-            except (InternalServerError, APIConnectionError, RateLimitError):
-                if attempt == 2:
-                    raise
-                await asyncio.sleep(2)
+        async def request(model: str):
+            print(f"[RESEARCH] {count} фактов, модель {model}", flush=True)
+            return await self.client.chat.completions.create(
+                model=model, temperature=0.8,
+                messages=[{"role": "system", "content": RESEARCH_PROMPT}, {"role": "user", "content": prompt}],
+            )
+
+        completion = await complete_with_fallback(request, self.model, self.fallback_model)
 
         data = self._parse(completion.choices[0].message.content or "")
         if len(data) != count:
@@ -176,7 +174,7 @@ class FactResearcher:
                 raise ValueError(f"Required category: {requested}")
         self._remember(facts)
         for fact in facts:
-            print(f"[FACT] {fact.title}\n{fact.raw_data}", flush=True)
+            print(f"[FACT] {fact.title}", flush=True)
         return [fact.model_dump(mode="json") for fact in facts]
 
     async def close(self) -> None:

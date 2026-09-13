@@ -168,7 +168,7 @@ class ResearcherTests(unittest.TestCase):
     def test_transient_errors_retry_batch_and_recover_on_third_attempt(self):
         for error_type in (InternalServerError, APIConnectionError, RateLimitError):
             with self.subTest(error_type=error_type), tempfile.TemporaryDirectory() as tmp, patch(
-                "src.content.researcher.asyncio.sleep", new_callable=AsyncMock
+                "src.content.llm.asyncio.sleep", new_callable=AsyncMock
             ) as sleep:
                 researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
                 batch = [FACT, {**FACT, "topic": "Fresh event", "keywords": ["Fresh event"]}]
@@ -181,14 +181,14 @@ class ResearcherTests(unittest.TestCase):
                 calls = researcher.client.chat.completions.create.call_args_list
                 self.assertEqual(len(calls), 3)
                 self.assertEqual(calls[0], calls[1])
-                self.assertEqual(calls[1], calls[2])
-                self.assertEqual([call.args for call in sleep.await_args_list], [(2,), (2,)])
+                self.assertEqual(calls[2].kwargs, {**calls[1].kwargs, "model": researcher.fallback_model})
+                self.assertEqual([call.args for call in sleep.await_args_list], [(2,)])
                 self.assertEqual(len(json.loads(researcher.history_path.read_text(encoding="utf-8"))), 2)
 
     def test_transient_errors_stop_after_three_attempts(self):
         for error_type in (InternalServerError, APIConnectionError, RateLimitError):
             with self.subTest(error_type=error_type), tempfile.TemporaryDirectory() as tmp, patch(
-                "src.content.researcher.asyncio.sleep", new_callable=AsyncMock
+                "src.content.llm.asyncio.sleep", new_callable=AsyncMock
             ) as sleep:
                 researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
                 error = self.api_error(error_type)
@@ -197,12 +197,14 @@ class ResearcherTests(unittest.TestCase):
                     asyncio.run(researcher.find_facts(1, "systems"))
                 self.assertIs(caught.exception, error)
                 self.assertEqual(researcher.client.chat.completions.create.await_count, 3)
-                self.assertEqual([call.args for call in sleep.await_args_list], [(2,), (2,)])
+                self.assertEqual([call.args for call in sleep.await_args_list], [(2,)])
+                self.assertEqual([c.kwargs["model"] for c in researcher.client.chat.completions.create.call_args_list],
+                                 [researcher.model, researcher.model, researcher.fallback_model])
                 self.assertFalse(researcher.history_path.exists())
 
     def test_nontransient_api_error_is_not_retried(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "src.content.researcher.asyncio.sleep", new_callable=AsyncMock
+            "src.content.llm.asyncio.sleep", new_callable=AsyncMock
         ) as sleep:
             researcher = FactResearcher(api_key="test", history_path=Path(tmp) / "history.json")
             researcher.client.chat.completions.create = AsyncMock(side_effect=self.api_error(BadRequestError))

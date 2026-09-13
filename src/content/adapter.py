@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, field_validator
 
-from ..runtime import safe_error
+from ..runtime import logger, safe_error
+from ..config import llm_models
+from .llm import complete_with_fallback
 
-DEFAULT_MODEL = os.getenv("ANYMODEL_MODEL", "ag/gemini-3.7-flash-medium")
+DEFAULT_MODEL = llm_models()[0]
 
 SYSTEM_PROMPT = """Ты пишешь короткий сценарий для вертикального видео на естественном русском. Это разговор умного человека с другом, без лекционного или документального тона. Структура: хук → конкретное событие → неожиданный механизм → короткий payoff.
 
@@ -83,10 +84,13 @@ class StoryAdapter:
     def __init__(self, api_key: str, model: str | None = None) -> None:
         if not api_key:
             raise ValueError("ANYMODEL_API_KEY is not set")
-        self.client = AsyncOpenAI(api_key=api_key, base_url="https://anymodel.org/v1", timeout=90.0)
-        self.model = model or os.getenv("ANYMODEL_MODEL") or DEFAULT_MODEL
+        self.client = AsyncOpenAI(api_key=api_key, base_url="https://anymodel.org/v1", timeout=90.0, max_retries=0)
+        primary, self.fallback_model = llm_models()
+        self.model = model or primary
+        self.last_error: Exception | None = None
 
     async def adapt_story(self, original_title: str, original_text: str) -> dict | None:
+        self.last_error = None
         prompt = (
             f"Тема: {original_title}\n\n"
             f"Фактура: {original_text}\n\n"
@@ -102,23 +106,33 @@ class StoryAdapter:
         for attempt in range(3):
             content = ""
             try:
-                completion = await self.client.chat.completions.create(
-                    model=self.model,
-                    temperature=0.6,
-                    response_format={"type": "json_object"},
-                    messages=messages,
-                )
+                async def request(model: str):
+                    return await self.client.chat.completions.create(
+                        model=model, temperature=0.6,
+                        response_format={"type": "json_object"}, messages=messages,
+                    )
+                completion = await complete_with_fallback(request, self.model, self.fallback_model)
+            except Exception as exc:
+                self.last_error = exc
+                logger.error("Adaptation request failed: %s", safe_error(exc))
+                return None
+            try:
                 content = completion.choices[0].message.content or ""
-                return AdaptedStory.model_validate(self._parse_json(content)).model_dump()
+                story = AdaptedStory.model_validate(self._parse_json(content)).model_dump()
+                self.last_error = None
+                return story
             except ValueError as exc:
+                self.last_error = exc
                 print(f"[SCRIPT {attempt + 1}/3] Ответ не прошел проверку; исправляем длину/формат.", flush=True)
                 messages.extend([
                     {"role": "assistant", "content": content},
                     {"role": "user", "content": f"Исправь JSON: {exc}. Строго 42-50 слов, без цифр. Не добавляй фактов."},
                 ])
             except Exception as exc:
-                print(f"[AI ERROR] {safe_error(exc)}", flush=True)
+                self.last_error = exc
+                logger.error("Adaptation response failed: %s", safe_error(exc))
                 return None
+        logger.error("Adaptation validation failed: %s", safe_error(self.last_error))
         return None
 
     @staticmethod

@@ -10,6 +10,7 @@ from typing import Any
 
 from src.config import Settings
 from src.pipeline import ShortsPipeline
+from src.runtime import atomic_json, atomic_text, batch_status, log_failure, log_to
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -106,16 +107,24 @@ async def async_main(args: argparse.Namespace) -> int:
 
     batch_dir = project_path(args.output_dir) / f"batch_{datetime.now():%Y%m%d_%H%M%S}"
     try:
-        batch_dir.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                batch_dir.mkdir(parents=True)
+                break
+            except FileExistsError:
+                await asyncio.sleep(1)
+                batch_dir = project_path(args.output_dir) / f"batch_{datetime.now():%Y%m%d_%H%M%S}"
     except OSError as exc:
         print(f"ОШИБКА: не удалось создать папку пачки {batch_dir}: {exc}", file=sys.stderr)
         return 2
 
-    settings = Settings(voice=args.voice, rate=args.rate, fps=args.fps)
+    settings = Settings.from_env(voice=args.voice, rate=args.rate, fps=args.fps)
     pipeline = ShortsPipeline(settings)
     posting_blocks: list[str] = []
     successful = 0
     total = len(stories)
+    failures = []
+    posting_plan_path = batch_dir / "posting_plan.txt"
 
     for index, story in enumerate(stories, start=1):
         title = (
@@ -125,7 +134,7 @@ async def async_main(args: argparse.Namespace) -> int:
         )
         print(f'\n[BATCH {index}/{total}] Рендерим: "{title}"')
         video_path = batch_dir / f"video_{index:02d}.mp4"
-
+        stage = "input"
         try:
             if not isinstance(story, dict):
                 raise ValueError("история должна быть JSON-объектом")
@@ -133,30 +142,40 @@ async def async_main(args: argparse.Namespace) -> int:
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("поле 'text' отсутствует или пусто")
 
-            await pipeline.run(text, output_path=video_path)
+            stage = "video"
+            with log_to(batch_dir / "render.jsonl"):
+                await pipeline.run(text, output_path=video_path)
         except Exception as exc:
-            print(
-                f'[BATCH {index}/{total}] ОШИБКА для "{title}": {exc}',
-                file=sys.stderr,
-            )
+            with log_to(batch_dir / "render.jsonl"):
+                failures.append(log_failure(getattr(pipeline, "last_stage", "video") if stage == "video" else stage, exc,
+                                            item=index, filename=video_path.name))
             continue
 
         successful += 1
         posting_blocks.append(posting_block(index, video_path.name, story, args.channel_tag))
+        try:
+            atomic_text(posting_plan_path, "\n\n".join(posting_blocks) + "\n")
+        except OSError as exc:
+            log_failure("posting_plan", exc, item=index)
+            return 2
         print(f"[BATCH {index}/{total}] Готово: {video_path.name}")
 
-    posting_plan_path = batch_dir / "posting_plan.txt"
     try:
         plan_text = "\n\n".join(posting_blocks)
         if plan_text:
             plan_text += "\n"
-        posting_plan_path.write_text(plan_text, encoding="utf-8")
+        atomic_text(posting_plan_path, plan_text)
+        atomic_json(batch_dir / "batch_result.json", {
+            "status": batch_status(successful, total), "successful": successful,
+            "total": total, "failures": failures,
+        })
     except OSError as exc:
         print(f"ОШИБКА: не удалось записать план публикаций: {exc}", file=sys.stderr)
         return 2
 
     print("\n" + SEPARATOR)
     print(f"Успешно сгенерировано {successful} из {total} роликов")
+    print(f"Batch status: {batch_status(successful, total)}")
     print(f"Папка пачки: {batch_dir}")
     print(f"План публикаций: {posting_plan_path}")
     print(SEPARATOR)

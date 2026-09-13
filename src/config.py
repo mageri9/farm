@@ -5,6 +5,14 @@ import math
 from dataclasses import fields
 from dotenv import load_dotenv
 
+PRIMARY_MODEL = "ag/gemini-3.7-flash-medium"
+FALLBACK_MODEL = "ag/claude-sonnet-4-6"
+
+
+def llm_models() -> tuple[str, str]:
+    return (os.getenv("PRIMARY_MODEL") or os.getenv("ANYMODEL_MODEL") or PRIMARY_MODEL,
+            os.getenv("FALLBACK_MODEL") or FALLBACK_MODEL)
+
 
 @dataclass
 class Settings:
@@ -27,10 +35,10 @@ class Settings:
     ffprobe: str = "ffprobe"
     probe_timeout: float = 30.0
     render_timeout: float = 1800.0
-    tts_timeout: float = 120.0
+    tts_timeout: float = 30.0
     request_timeout: float = 60.0
     retry_attempts: int = 3
-    retry_delay: float = 2.0
+    retry_delay: float = 3.0
     max_text_chars: int = 20000
     loop_background: bool = True
 
@@ -101,3 +109,11 @@ class Settings:
     @property
     def work_dir(self) -> Path:
         return self.root / "work"
+
+    @property
+    def primary_model(self) -> str:
+        return llm_models()[0]
+
+    @property
+    def fallback_model(self) -> str:
+        return llm_models()[1]

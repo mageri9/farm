@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from contextlib import ExitStack
 
 from dotenv import load_dotenv
 
@@ -14,7 +15,7 @@ from src.config import Settings
 from src.content.adapter import AdaptedStory, StoryAdapter
 from src.content.researcher import FactResearcher
 from src.pipeline import ShortsPipeline
-from src.runtime import atomic_json, atomic_text, log_to, safe_error
+from src.runtime import atomic_json, atomic_text, batch_status, log_failure, log_to, safe_error
 
 ROOT = Path(__file__).resolve().parent
 
@@ -52,6 +53,10 @@ async def main_async(args: argparse.Namespace) -> int:
     started = time.monotonic()
     batch = None
     researcher = adapter = None
+    logs = ExitStack()
+    successful = 0
+    failures = []
+    stage = "setup"
 
     def progress(stage: str, message: str) -> None:
         print(f"[{time.monotonic() - started:6.1f}s] [{stage}] {message}", flush=True)
@@ -73,59 +78,86 @@ async def main_async(args: argparse.Namespace) -> int:
             except FileExistsError:
                 await asyncio.sleep(1)
                 batch = ROOT / "output" / f"batch_{datetime.now():%Y%m%d_%H%M%S}"
+        logs.enter_context(log_to(batch / "render.jsonl"))
         progress("START", f"Батч {batch.name}: ищем {args.count} фактов ({args.category})")
+        stage = "research"
         researcher = FactResearcher(history_path=ROOT / "work" / "facts_history.json")
         facts = await researcher.find_facts(args.count, args.category)
         atomic_json(batch / "facts.json", facts)
         progress("RESEARCH", f"Найдено и сохранено фактов: {len(facts)}")
+        if not facts:
+            raise RuntimeError("Research returned no facts")
+        stage = "adaptation.setup"
         adapter = StoryAdapter(os.getenv("ANYMODEL_API_KEY", ""))
         stories = []
-        for i, fact in enumerate(facts, 1):
-            progress(f"SCRIPT {i}/{args.count}", fact["title"])
-            story = await adapter.adapt_story(fact["title"], fact["raw_data"])
-            if not story:
-                raise RuntimeError(f"Не удалось адаптировать факт: {fact['topic']}")
-            story = AdaptedStory.model_validate(story).model_dump()
-            story.update(topic=fact["topic"], category=fact["category"], sources=fact["sources"],
-                         filename=f"video_{i:02d}.mp4", status="dry-run" if args.dry_run else "pending")
-            stories.append(story)
-            atomic_text(batch / f"story_{i:02d}.txt", story["text"] + "\n")
-            atomic_json(batch / "stories.json", stories)
-            progress(f"SCRIPT {i}/{args.count}", f"{len(story['text'].split())} слов: {story['text']}")
 
         def save_plan() -> None:
             atomic_json(batch / "stories.json", stories)
-            blocks = [posting(s, s["filename"], i, s["status"]) for i, s in enumerate(stories, 1)]
+            blocks = [posting(s, s["filename"], int(Path(s["filename"]).stem.split("_")[-1]), s["status"])
+                      for s in stories if s["status"] in ("rendered", "dry-run")]
             atomic_text(batch / "posting_plan.txt", "\n\n".join(blocks) + "\n")
 
         save_plan()
-        failures = 0
-        if pipeline is not None:
-            with log_to(batch / "render.jsonl"):
-                for i, story in enumerate(stories, 1):
+        for i, fact in enumerate(facts, 1):
+            story = None
+            stage = "adaptation"
+            try:
+                progress(f"SCRIPT {i}/{args.count}", f"Processing item {i}")
+                adapted = await adapter.adapt_story(fact["title"], fact["raw_data"])
+                if not adapted:
+                    error = getattr(adapter, "last_error", None)
+                    raise RuntimeError("Fact adaptation failed") from (error if isinstance(error, Exception) else None)
+                story = AdaptedStory.model_validate(adapted).model_dump()
+                story.update(topic=fact["topic"], category=fact["category"], sources=fact["sources"],
+                             filename=f"video_{i:02d}.mp4", status="dry-run" if args.dry_run else "pending")
+                stories.append(story)
+                stage = "script.output"
+                atomic_text(batch / f"story_{i:02d}.txt", story["text"] + "\n")
+                atomic_json(batch / "stories.json", stories)
+                progress(f"SCRIPT {i}/{args.count}", f"{len(story['text'].split())} слов")
+                if pipeline is not None:
+                    stage = "video"
                     progress(f"VIDEO {i}/{args.count}", f"Озвучка и рендер {story['filename']}")
-                    try:
-                        await pipeline.run(story["text"], output_path=batch / story["filename"])
-                        story.update(status="rendered", report=pipeline.last_report)
-                        progress(f"VIDEO {i}/{args.count}", f"Готово: {story['filename']}; {pipeline.last_report}")
-                    except Exception as exc:
-                        failures += 1
-                        story.update(status="failed", error=safe_error(exc))
-                        progress("ERROR", safe_error(exc))
-                    finally:
-                        save_plan()
-        progress("DONE", f"{batch}; сценариев: {len(stories)}, ошибок рендера: {failures}")
-        return 1 if failures else 0
+                    await pipeline.run(story["text"], output_path=batch / story["filename"])
+                    story.update(status="rendered", report=pipeline.last_report)
+                    progress(f"VIDEO {i}/{args.count}", f"Готово: {story['filename']}; {pipeline.last_report}")
+                successful += 1
+            except Exception as exc:
+                failed_stage = getattr(pipeline, "last_stage", "video") if stage == "video" else stage
+                failures.append(log_failure(failed_stage, exc, item=i, filename=f"video_{i:02d}.mp4"))
+                if story is not None:
+                    story.update(status="failed", error=safe_error(exc))
+            stage = "posting_plan"
+            save_plan()
+            atomic_json(batch / "batch_result.json", {
+                "status": batch_status(successful, args.count), "successful": successful,
+                "total": args.count, "failures": failures, "dry_run": args.dry_run,
+            })
+        status = batch_status(successful, args.count)
+        progress("DONE", f"{status}: {successful}/{args.count} successful; {batch}")
+        return 0 if status == "SUCCESS" else 1
     except Exception as exc:
-        progress("ERROR", safe_error(exc))
+        failure = log_failure(stage, exc)
+        status = "PARTIAL_SUCCESS" if successful else "FAILED"
         if batch is not None and batch.exists():
-            atomic_json(batch / "error.json", {"error": safe_error(exc)})
+            try:
+                atomic_json(batch / "error.json", {"error": safe_error(exc)})
+                atomic_json(batch / "batch_result.json", {
+                    "status": status, "successful": successful, "total": args.count,
+                    "failures": [*failures, failure], "dry_run": args.dry_run,
+                })
+            except OSError as report_error:
+                progress("ERROR", f"Cannot save failure report: {safe_error(report_error)}")
+        progress("ERROR", f"{status}: {safe_error(exc)}")
         return 1
     finally:
-        if researcher is not None:
-            await researcher.close()
-        if adapter is not None:
-            await adapter.client.close()
+        for client in (researcher, adapter.client if adapter is not None else None):
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception as exc:
+                    log_failure("client.close", exc)
+        logs.close()
 
 
 def main() -> int:

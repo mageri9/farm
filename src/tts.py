@@ -6,6 +6,11 @@ from typing import Any
 import inspect
 import math
 import asyncio
+import socket
+from uuid import uuid4
+
+from .config import Settings
+from .runtime import logger, safe_error
 
 
 class TTSError(RuntimeError):
@@ -42,43 +47,69 @@ def _boundary_from_event(event: Any) -> WordBoundary | None:
     return WordBoundary(text, start, end)
 
 
-async def generate_tts(text: str, audio_path: Path, voice: str, rate: str) -> list[WordBoundary]:
+def _retryable(exc: Exception) -> bool:
+    import aiohttp
+    from edge_tts.exceptions import EdgeTTSException
+
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return exc.status == 429 or 500 <= exc.status < 600
+    if isinstance(exc, (aiohttp.InvalidURL, aiohttp.ClientSSLError, ValueError, TypeError)):
+        return False
+    return isinstance(exc, (EdgeTTSException, TTSError, aiohttp.ClientConnectionError,
+                            aiohttp.ClientPayloadError, ConnectionError, socket.gaierror, TimeoutError))
+
+
+async def generate_tts(text: str, audio_path: Path, voice: str, rate: str, *,
+                       attempts: int = 3, retry_delay: float = 3.0,
+                       timeout: float = 30.0) -> list[WordBoundary]:
     """Stream Edge TTS audio to disk and return word timings in seconds."""
     try:
         import edge_tts
     except ImportError as exc:
         raise TTSError("edge-tts is not installed. Run: pip install -r requirements.txt") from exc
+    # Reuse validation for the existing SHORTS retry/timeout settings.
+    Settings(retry_attempts=attempts, retry_delay=retry_delay, tts_timeout=timeout)
+    audio_path = Path(audio_path)
     audio_path.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(3):
+    partial = audio_path.with_name(f".{audio_path.name}.{uuid4().hex}.partial")
+    fallback_voice = "ru-RU-SvetlanaNeural"
+    voices = [voice] * attempts
+    if voice == "ru-RU-DmitryNeural":
+        voices.append(fallback_voice)
+    for attempt, selected_voice in enumerate(voices):
+        if attempt == attempts:
+            logger.warning("Primary TTS voice failed after retries. Switching to fallback voice: %s", fallback_voice)
         boundaries: list[WordBoundary] = []
         try:
             kwargs = {"rate": rate}
             if "boundary" in inspect.signature(edge_tts.Communicate).parameters:
                 kwargs["boundary"] = "WordBoundary"
-            communicate = edge_tts.Communicate(text, voice, **kwargs)
-            with audio_path.open("wb") as output:
-                async for event in communicate.stream():
-                    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
-                    if event_type == "audio":
-                        data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
-                        if data:
-                            output.write(data)
-                    elif event_type == "WordBoundary":
-                        boundary = _boundary_from_event(event)
-                        if boundary:
-                            boundaries.append(boundary)
+            communicate = edge_tts.Communicate(text, selected_voice, **kwargs)
+            async with asyncio.timeout(timeout):
+                with partial.open("wb") as output:
+                    async for event in communicate.stream():
+                        event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+                        if event_type == "audio":
+                            data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
+                            if data:
+                                output.write(data)
+                        elif event_type == "WordBoundary":
+                            boundary = _boundary_from_event(event)
+                            if boundary:
+                                boundaries.append(boundary)
             if not boundaries:
                 raise TTSError("Edge TTS returned no WordBoundary events; cannot create timed subtitles.")
-            if not audio_path.exists() or audio_path.stat().st_size == 0:
+            if partial.stat().st_size == 0:
                 raise TTSError("Edge TTS produced an empty audio file.")
+            partial.replace(audio_path)
             return boundaries
         except Exception as exc:
-            audio_path.unlink(missing_ok=True)
-            if attempt == 2:
-                if isinstance(exc, TTSError):
-                    raise
-                raise TTSError(f"Edge TTS failed ({type(exc).__name__}); check network and voice settings") from exc
-            delay = 2 * (attempt + 1)
-            print(f"[TTS WARNING] attempt {attempt + 1} failed; retrying in {delay}s: {exc}", flush=True)
-            await asyncio.sleep(delay)
+            logger.warning("TTS error: %s (voice=%s, attempt=%s/%s)",
+                           safe_error(exc), selected_voice, attempt + 1, len(voices))
+            if not _retryable(exc) or attempt + 1 == len(voices):
+                raise TTSError(f"Edge TTS failed: {safe_error(exc)}") from exc
+        finally:
+            partial.unlink(missing_ok=True)
+        if attempt + 1 < attempts:
+            await asyncio.sleep(min(60, retry_delay * 2 ** attempt))
     raise TTSError("Edge TTS failed after retries")
