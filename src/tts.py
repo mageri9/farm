@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import inspect
 import math
+import asyncio
 
 
 class TTSError(RuntimeError):
@@ -48,29 +49,36 @@ async def generate_tts(text: str, audio_path: Path, voice: str, rate: str) -> li
     except ImportError as exc:
         raise TTSError("edge-tts is not installed. Run: pip install -r requirements.txt") from exc
     audio_path.parent.mkdir(parents=True, exist_ok=True)
-    boundaries: list[WordBoundary] = []
-    try:
-        # В новых версиях edge-tts нужно явно запросить WordBoundary
-        kwargs = {"rate": rate}
-        if "boundary" in inspect.signature(edge_tts.Communicate).parameters:
-            kwargs["boundary"] = "WordBoundary"
-
-        communicate = edge_tts.Communicate(text, voice, **kwargs)
-        with audio_path.open("wb") as output:
-            async for event in communicate.stream():
-                event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
-                if event_type == "audio":
-                    data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
-                    if data:
-                        output.write(data)
-                elif event_type == "WordBoundary":
-                    boundary = _boundary_from_event(event)
-                    if boundary:
-                        boundaries.append(boundary)
-    except Exception as exc:
-        raise TTSError(f"Edge TTS failed ({type(exc).__name__}); check network and voice settings") from exc
-    if not boundaries:
-        raise TTSError("Edge TTS returned no WordBoundary events; cannot create timed subtitles.")
-    if not audio_path.exists() or audio_path.stat().st_size == 0:
-        raise TTSError("Edge TTS produced an empty audio file.")
-    return boundaries
+    for attempt in range(3):
+        boundaries: list[WordBoundary] = []
+        try:
+            kwargs = {"rate": rate}
+            if "boundary" in inspect.signature(edge_tts.Communicate).parameters:
+                kwargs["boundary"] = "WordBoundary"
+            communicate = edge_tts.Communicate(text, voice, **kwargs)
+            with audio_path.open("wb") as output:
+                async for event in communicate.stream():
+                    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+                    if event_type == "audio":
+                        data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
+                        if data:
+                            output.write(data)
+                    elif event_type == "WordBoundary":
+                        boundary = _boundary_from_event(event)
+                        if boundary:
+                            boundaries.append(boundary)
+            if not boundaries:
+                raise TTSError("Edge TTS returned no WordBoundary events; cannot create timed subtitles.")
+            if not audio_path.exists() or audio_path.stat().st_size == 0:
+                raise TTSError("Edge TTS produced an empty audio file.")
+            return boundaries
+        except Exception as exc:
+            audio_path.unlink(missing_ok=True)
+            if attempt == 2:
+                if isinstance(exc, TTSError):
+                    raise
+                raise TTSError(f"Edge TTS failed ({type(exc).__name__}); check network and voice settings") from exc
+            delay = 2 * (attempt + 1)
+            print(f"[TTS WARNING] attempt {attempt + 1} failed; retrying in {delay}s: {exc}", flush=True)
+            await asyncio.sleep(delay)
+    raise TTSError("Edge TTS failed after retries")

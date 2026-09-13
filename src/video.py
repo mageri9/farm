@@ -82,8 +82,9 @@ def render_video(
     cmd = [executable, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
 
     crop_scale = (
-        f"crop=trunc(ih*9/16/2)*2:ih:(iw-ow)/2:0,"
-        f"scale={settings.video_width}:{settings.video_height},setsar=1,fps={settings.fps}"
+        f"scale={settings.video_width}:{settings.video_height}:force_original_aspect_ratio=increase,"
+        f"crop={settings.video_width}:{settings.video_height}:(in_w-{settings.video_width})/2:"
+        f"(in_h-{settings.video_height})/2,setsar=1,fps={settings.fps}"
     )
 
     if target_clips < 1:
