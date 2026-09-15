@@ -35,6 +35,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--voice", default="ru-RU-DmitryNeural")
     p.add_argument("--rate", default="+10%")
     p.add_argument("--fps", type=int, choices=[30, 60], default=30)
+    p.add_argument("--story", help="Готовый текст сценария")
+    p.add_argument("--story-file", help="Путь к TXT-файлу со сценарием")
+    p.add_argument("--title", help="Заголовок истории")
     return p.parse_args(argv)
 
 
@@ -67,8 +70,19 @@ async def main_async(args: argparse.Namespace) -> int:
         if not args.dry_run:
             pipeline = ShortsPipeline(settings)
             pipeline.preflight()
-        if not os.getenv("ANYMODEL_API_KEY"):
+        custom_story = None
+        if args.story_file:
+            custom_story = Path(args.story_file).read_text(encoding="utf-8")
+        elif args.story is not None:
+            custom_story = args.story
+        custom_mode = custom_story is not None
+        if not custom_mode and not os.getenv("ANYMODEL_API_KEY"):
             raise ValueError("Не задан ANYMODEL_API_KEY в .env")
+        if custom_mode:
+            custom_story = custom_story.strip()
+            if not custom_story:
+                raise ValueError("Сценарий не может быть пустым")
+            args.count = 1
         batch = ROOT / "output" / f"batch_{datetime.now():%Y%m%d_%H%M%S}"
         # Never reuse a previous batch, including simultaneous starts in the same second.
         while True:
@@ -79,16 +93,20 @@ async def main_async(args: argparse.Namespace) -> int:
                 await asyncio.sleep(1)
                 batch = ROOT / "output" / f"batch_{datetime.now():%Y%m%d_%H%M%S}"
         logs.enter_context(log_to(batch / "render.jsonl"))
-        progress("START", f"Батч {batch.name}: ищем {args.count} фактов ({args.category})")
-        stage = "research"
-        researcher = FactResearcher(history_path=ROOT / "work" / "facts_history.json")
-        facts = await researcher.find_facts(args.count, args.category)
-        atomic_json(batch / "facts.json", facts)
-        progress("RESEARCH", f"Найдено и сохранено фактов: {len(facts)}")
-        if not facts:
-            raise RuntimeError("Research returned no facts")
-        stage = "adaptation.setup"
-        adapter = StoryAdapter(os.getenv("ANYMODEL_API_KEY", ""))
+        progress("START", f"Батч {batch.name}: {'готовый сценарий' if custom_mode else f'ищем {args.count} фактов ({args.category})'}")
+        if custom_mode:
+            facts = [{"title": args.title or " ".join(custom_story.split()[:7]), "raw_data": custom_story,
+                      "topic": args.title or "custom", "category": args.category, "sources": []}]
+        else:
+            stage = "research"
+            researcher = FactResearcher(history_path=ROOT / "work" / "facts_history.json")
+            facts = await researcher.find_facts(args.count, args.category)
+            atomic_json(batch / "facts.json", facts)
+            progress("RESEARCH", f"Найдено и сохранено фактов: {len(facts)}")
+            if not facts:
+                raise RuntimeError("Research returned no facts")
+            stage = "adaptation.setup"
+            adapter = StoryAdapter(os.getenv("ANYMODEL_API_KEY", ""))
         stories = []
 
         def save_plan() -> None:
@@ -103,11 +121,12 @@ async def main_async(args: argparse.Namespace) -> int:
             stage = "adaptation"
             try:
                 progress(f"SCRIPT {i}/{args.count}", f"Processing item {i}")
-                adapted = await adapter.adapt_story(fact["title"], fact["raw_data"])
+                adapted = ({"title": args.title or fact["title"], "text": custom_story, "tags": ["#шортс", "#история", "#факты"]}
+                            if custom_mode else await adapter.adapt_story(fact["title"], fact["raw_data"]))
                 if not adapted:
                     error = getattr(adapter, "last_error", None)
                     raise RuntimeError("Fact adaptation failed") from (error if isinstance(error, Exception) else None)
-                story = AdaptedStory.model_validate(adapted).model_dump()
+                story = (adapted if custom_mode else AdaptedStory.model_validate(adapted).model_dump())
                 story.update(topic=fact["topic"], category=fact["category"], sources=fact["sources"],
                              filename=f"video_{i:02d}.mp4", status="dry-run" if args.dry_run else "pending")
                 stories.append(story)
