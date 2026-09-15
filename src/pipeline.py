@@ -88,7 +88,7 @@ class ShortsPipeline:
                 event("tts.started", output=output)
                 boundaries = await generate_tts(text, audio, s.voice, s.rate,
                                                 attempts=s.retry_attempts, retry_delay=s.retry_delay,
-                                                timeout=s.tts_timeout)
+                                                timeout=s.tts_timeout, settings=s)
                 duration = probe_duration(audio, s)
                 if duration > 26.5:
                     event("tts.duration_rejected", duration=duration, limit=26.5, output=output)

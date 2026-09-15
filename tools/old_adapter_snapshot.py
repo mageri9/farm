@@ -1,15 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, field_validator
 
-from ..runtime import logger, safe_error
-from ..config import llm_models
-from .llm import complete_with_fallback
+from src.runtime import logger, safe_error
+from src.config import llm_models
+from src.content.llm import complete_with_fallback
 
 DEFAULT_MODEL = llm_models()[0]
 
@@ -85,7 +84,7 @@ class StoryAdapter:
     def __init__(self, api_key: str, model: str | None = None) -> None:
         if not api_key:
             raise ValueError("ANYMODEL_API_KEY is not set")
-        self.client = AsyncOpenAI(api_key=api_key, base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("ANYMODEL_BASE_URL", "https://api.aitunnel.ru/v1/"), timeout=90.0, max_retries=0)
+        self.client = AsyncOpenAI(api_key=api_key, base_url="https://anymodel.org/v1", timeout=90.0, max_retries=0)
         primary, self.fallback_model = llm_models()
         self.model = model or primary
         self.last_error: Exception | None = None
@@ -145,5 +144,3 @@ class StoryAdapter:
         if not isinstance(parsed, dict):
             raise ValueError("Model response is not an object")
         return parsed
-
-

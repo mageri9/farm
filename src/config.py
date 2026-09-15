@@ -41,6 +41,10 @@ class Settings:
     retry_delay: float = 3.0
     max_text_chars: int = 20000
     loop_background: bool = True
+    anyvoice_url: str = "https://anymodel.org/api/anyvoice/tts"
+    anyvoice_reference_id: str = "dcd50b837c724daf898bb375c6ae4537"
+    anyvoice_cookie: str = ""
+    tts_provider: str = "anyvoice"
 
     def __post_init__(self):
         self.root = Path(self.root)
@@ -72,6 +76,8 @@ class Settings:
         values = {}
         for field in fields(cls):
             raw = os.getenv("SHORTS_" + field.name.upper())
+            if raw is None and field.name in {"anyvoice_reference_id", "anyvoice_cookie"}:
+                raw = os.getenv("ANYVOICE_" + field.name.removeprefix("anyvoice_").upper())
             if raw is None:
                 continue
             default = getattr(defaults, field.name)

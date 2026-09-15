@@ -7,6 +7,7 @@ import inspect
 import math
 import asyncio
 import socket
+import httpx
 from uuid import uuid4
 
 from .config import Settings
@@ -61,8 +62,31 @@ def _retryable(exc: Exception) -> bool:
 
 async def generate_tts(text: str, audio_path: Path, voice: str, rate: str, *,
                        attempts: int = 3, retry_delay: float = 3.0,
-                       timeout: float = 30.0) -> list[WordBoundary]:
+                       timeout: float = 30.0, settings: Settings | None = None) -> list[WordBoundary]:
     """Stream Edge TTS audio to disk and return word timings in seconds."""
+    if settings is not None and settings.tts_provider == "anyvoice":
+        if not settings.anyvoice_cookie:
+            logger.warning("AnyVoice недоступен (кука не задана). Переключаемся на аварийный Edge-TTS...")
+        else:
+            try:
+                from .video import probe_duration
+                headers = {"Content-Type":"application/json", "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0", "Cookie":settings.anyvoice_cookie, "Origin":"https://anymodel.org", "Referer":"https://anymodel.org/anyvoice/index.html"}
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(settings.anyvoice_url, headers=headers, json={"text":text,"referenceId":settings.anyvoice_reference_id,"format":"mp3","freeTrial":True})
+                    response.raise_for_status()
+                    if not response.content: raise TTSError("пустой ответ")
+                audio_path = Path(audio_path); audio_path.parent.mkdir(parents=True, exist_ok=True)
+                partial = audio_path.with_name(f".{audio_path.name}.{uuid4().hex}.partial")
+                partial.write_bytes(response.content); partial.replace(audio_path)
+                duration = probe_duration(audio_path, settings)
+                words = text.split(); total = sum(map(len, words)); curr = 0.0
+                boundaries = []
+                for w in words:
+                    end = curr + (len(w) / total) * duration
+                    boundaries.append(WordBoundary(w, curr, end)); curr = end
+                return boundaries
+            except Exception as exc:
+                logger.warning("AnyVoice недоступен (%s). Переключаемся на аварийный Edge-TTS...", safe_error(exc))
     try:
         import edge_tts
     except ImportError as exc:

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -97,7 +97,7 @@ class FactResearcher:
         key = api_key or os.getenv("ANYMODEL_API_KEY")
         if not key:
             raise ValueError("ANYMODEL_API_KEY is not set")
-        self.client = AsyncOpenAI(api_key=key, base_url="https://anymodel.org/v1", timeout=90.0, max_retries=0)
+        self.client = AsyncOpenAI(api_key=key, base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("ANYMODEL_BASE_URL", "https://api.aitunnel.ru/v1/"), timeout=90.0, max_retries=0)
         primary, self.fallback_model = llm_models()
         self.model = model or primary
         self.history_path = Path(history_path) if history_path is not None else Path(__file__).resolve().parents[2] / "work/facts_history.json"
@@ -179,3 +179,4 @@ class FactResearcher:
 
     async def close(self) -> None:
         await self.client.close()
+
