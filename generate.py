@@ -12,7 +12,9 @@ from contextlib import ExitStack
 from dotenv import load_dotenv
 
 from src.config import Settings
-from src.content.adapter import AdaptedStory, StoryAdapter
+from src.content.generator import UnifiedStoryGenerator
+# Kept importable for callers that patched the legacy classes in older integrations.
+from src.content.adapter import StoryAdapter
 from src.content.researcher import FactResearcher
 from src.pipeline import ShortsPipeline
 from src.runtime import atomic_json, atomic_text, batch_status, log_failure, log_to, safe_error
@@ -55,7 +57,7 @@ async def main_async(args: argparse.Namespace) -> int:
         return 2
     started = time.monotonic()
     batch = None
-    researcher = adapter = None
+    generator = None
     logs = ExitStack()
     successful = 0
     failures = []
@@ -98,15 +100,13 @@ async def main_async(args: argparse.Namespace) -> int:
             facts = [{"title": args.title or " ".join(custom_story.split()[:7]), "raw_data": custom_story,
                       "topic": args.title or "custom", "category": args.category, "sources": []}]
         else:
-            stage = "research"
-            researcher = FactResearcher(history_path=ROOT / "work" / "facts_history.json")
-            facts = await researcher.find_facts(args.count, args.category)
+            stage = "generation"
+            generator = UnifiedStoryGenerator(history_path=ROOT / "work" / "facts_history.json")
+            facts = await generator.generate(args.count, args.category)
             atomic_json(batch / "facts.json", facts)
-            progress("RESEARCH", f"Найдено и сохранено фактов: {len(facts)}")
+            progress("GENERATION", f"Создано историй: {len(facts)}")
             if not facts:
-                raise RuntimeError("Research returned no facts")
-            stage = "adaptation.setup"
-            adapter = StoryAdapter(os.getenv("ANYMODEL_API_KEY", ""))
+                raise RuntimeError("Generator returned no stories")
         stories = []
 
         def save_plan() -> None:
@@ -121,14 +121,14 @@ async def main_async(args: argparse.Namespace) -> int:
             stage = "adaptation"
             try:
                 progress(f"SCRIPT {i}/{args.count}", f"Processing item {i}")
-                adapted = ({"title": args.title or fact["title"], "text": custom_story, "tags": ["#шортс", "#история", "#факты"]}
-                            if custom_mode else await adapter.adapt_story(fact["title"], fact["raw_data"]))
-                if not adapted:
-                    error = getattr(adapter, "last_error", None)
-                    raise RuntimeError("Fact adaptation failed") from (error if isinstance(error, Exception) else None)
-                story = (adapted if custom_mode else AdaptedStory.model_validate(adapted).model_dump())
-                story.update(topic=fact["topic"], category=fact["category"], sources=fact["sources"],
-                             filename=f"video_{i:02d}.mp4", status="dry-run" if args.dry_run else "pending")
+                if custom_mode:
+                    story = {"title": args.title or fact["title"], "text": custom_story,
+                             "tags": ["#шортс", "#история", "#факты"], "topic": fact["topic"],
+                             "category": fact["category"], "sources": []}
+                else:
+                    story = dict(fact)
+                    story["sources"] = [{"url": fact.get("source_url", ""), "title": fact.get("topic", "")}]
+                story.update(filename=f"video_{i:02d}.mp4", status="dry-run" if args.dry_run else "pending")
                 stories.append(story)
                 stage = "script.output"
                 atomic_text(batch / f"story_{i:02d}.txt", story["text"] + "\n")
@@ -170,7 +170,7 @@ async def main_async(args: argparse.Namespace) -> int:
         progress("ERROR", f"{status}: {safe_error(exc)}")
         return 1
     finally:
-        for client in (researcher, adapter.client if adapter is not None else None):
+        for client in (generator,):
             if client is not None:
                 try:
                     await client.close()

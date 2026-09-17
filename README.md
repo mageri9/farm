@@ -4,6 +4,8 @@ python generate.py --count 3 --category all
 
 .\.venv\Scripts\python.exe generate.py --count 1 --category all
 
+.\.venv\Scripts\python.exe generate.py --story-file story.txt
+
 ## 1. Назначение
 
 Shorts Generator собирает вертикальные видео с озвучкой, фоновыми кадрами и встроенными субтитрами. Проект предназначен для подготовки коротких документальных роликов для Shorts, Reels и других площадок с вертикальным форматом.

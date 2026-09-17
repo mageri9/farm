@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from ..runtime import atomic_json, file_lock
 from ..config import llm_models
 from .llm import complete_with_fallback
+# Unified generator is re-exported here for integrations that used researcher as entrypoint.
+from .generator import GeneratedStory, UnifiedStoryGenerator
 
 DEFAULT_MODEL = llm_models()[0]
 CATEGORIES = ("systems", "science", "mind")
