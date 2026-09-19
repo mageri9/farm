@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..config import llm_models
 from ..runtime import atomic_json, file_lock
@@ -21,18 +21,27 @@ SYSTEM_PROMPT = """Ты — сценарист и фактологический
 
 Выбери один реальный, строго задокументированный инцидент или эксперимент по заданной категории и сразу напиши готовый монолог для озвучки. Начни утверждением, разрушающим иллюзию контроля; запрещены риторические вопросы со словом «Как». Передай конфликт через понятные телесные образы, затем дай резкий payoff: грандиозная система погибает из-за смехотворно мелкой причины. Без морализаторства и призывов подписаться.
 
-ЖЕСТКИЕ ПРАВИЛА: text строго от 42 до 48 слов; все числа, даты и величины только словами; не используй омографы со спорным ударением; не используй фразы «сломал догму», «зеркало реальности», «фундаментально», «парадокс заключается в том»; только реальные события с существующей ссылкой.
+ЖЕСТКИЕ ПРАВИЛА: суммарный текст четырех beats строго от 42 до 48 слов; каждый бит непустой; все числа, даты и величины только словами; не используй омографы со спорным ударением; не используй фразы «сломал догму», «зеркало реальности», «фундаментально», «парадокс заключается в том»; только реальные события с существующей ссылкой.
 
-Верни только JSON-массив объектов с полями topic (каноническое английское имя), category, source_url, title, text, tags и keywords. source_url — прямая HTTPS-ссылка на Википедию или отчет.
+Верни только JSON-массив объектов с полями topic, category, source_url, title, beats и tags. beats должен содержать establishing, tension, subject и aftermath. source_url — прямая HTTPS-ссылка на Википедию или отчет.
+Формат объекта:
+{"topic": "English Name", "category": "systems", "source_url": "https://...", "title": "Хлесткий заголовок", "beats": {"establishing": "...", "tension": "...", "subject": "...", "aftermath": "..."}, "tags": ["#шортс", "#факты"]}
 """
 
+
+class StoryBeats(BaseModel):
+    establishing: str
+    tension: str
+    subject: str
+    aftermath: str
 
 class GeneratedStory(BaseModel):
     topic: str = Field(min_length=3)
     category: Literal["systems", "science", "mind"]
     source_url: str = Field(min_length=8)
     title: str = Field(min_length=3, max_length=50)
-    text: str
+    beats: StoryBeats
+    text: str = ""
     tags: list[str] = Field(default_factory=list)
 
     @field_validator("source_url")
@@ -53,6 +62,14 @@ class GeneratedStory(BaseModel):
         if re.search(r"\d", value):
             raise ValueError("Все числа, даты и величины должны быть написаны строго словами")
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def compose_text(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "beats" in data:
+            beats = StoryBeats.model_validate(data["beats"])
+            data = {**data, "text": f"{beats.establishing} {beats.tension} {beats.subject} {beats.aftermath}"}
+        return data
 
 
 class UnifiedStoryGenerator:

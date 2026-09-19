@@ -70,6 +70,7 @@ def render_video(
     start_offsets: Sequence[float] | float,
     settings: Settings,
     target_clips: int = 4,
+    clip_durations: Sequence[float] | float | None = None,
 ) -> None:
     executable = check_executable(settings.ffmpeg)
     subtitle_path = escape_subtitle_path(subtitles)
@@ -112,17 +113,20 @@ def render_video(
             cmd += ["-vf", vf, "-map", "0:v:0", "-map", "1:a:0"]
     else:
         # Мульти-клип: жесткий стык планов через trim
-        cut_duration = duration / len(bg_list)
+        if clip_durations is None:
+            durations = [duration / len(bg_list)] * len(bg_list)
+        elif isinstance(clip_durations, (int, float)):
+            durations = [float(clip_durations)] * len(bg_list)
+        else:
+            durations = list(clip_durations)
+        if len(durations) != len(bg_list) or any(not math.isfinite(d) or d <= 0 for d in durations):
+            raise ValueError("clip_durations must contain one positive finite duration per clip")
         filter_complex = []
         concat_inputs = ""
 
         for idx, bg in enumerate(bg_list):
             st = starts[idx] if idx < len(starts) else 0.0
-            dur = (
-                cut_duration
-                if idx < len(bg_list) - 1
-                else (duration - cut_duration * idx)
-            )
+            dur = durations[idx]
             cmd += ["-stream_loop", "-1", "-ss", f"{st:.3f}", "-i", str(bg)]
             filter_complex.append(
                 f"[{idx}:v]trim=duration={dur:.3f},{crop_scale},setpts=PTS-STARTPTS[v{idx}];"
