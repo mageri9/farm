@@ -51,21 +51,31 @@ class ShortsPipeline:
                 return videos
         return []
 
-    def _select_backgrounds(self, total_duration: float, seed: int | None = None, target_clips: int = 4) -> tuple[list[Path], list[float]]:
+    def _select_backgrounds(self, total_duration: float, seed: int | None = None, target_clips: int = 4, story: dict | None = None) -> tuple[list[Path], list[float]]:
         s = self.settings
         if target_clips < 1:
             raise ValueError("target_clips must be positive")
+        raw_beats = story.get("beats") if isinstance(story, dict) else getattr(story, "beats", None)
+        if isinstance(raw_beats, dict):
+            beat_values = raw_beats
+        elif raw_beats is not None:
+            beat_values = {name: getattr(raw_beats, name, "") for name in ("establishing", "tension", "subject", "aftermath")}
+        else:
+            beat_values = {}
+        counts = [len(str(beat_values.get(name, "")).split()) for name in ("establishing", "tension", "subject", "aftermath")]
+        self._clip_durations = ([c / sum(counts) * total_duration for c in counts]
+                                if target_clips == 4 and all(counts) else [total_duration / target_clips] * target_clips)
+        print(f"[VIDEO] Адаптивные тайминги планов (сек): {[round(t, 3) for t in self._clip_durations]}")
 
         # 1. Сначала проверяем режиссерские папки (4 плана по драматургии)
         beats = self._dramaturgical_candidates()
         if beats and target_clips == 4:
             rng = random.Random(seed)
             selected = [rng.choice(beat_files) for beat_files in beats]
-            clip_duration = total_duration / target_clips
             offsets = []
             for idx, bg in enumerate(selected):
                 dur = probe_duration(bg, s)
-                offsets.append(random_start(dur, clip_duration, None if seed is None else seed + idx))
+                offsets.append(random_start(dur, self._clip_durations[idx], None if seed is None else seed + idx))
             print(f"[VIDEO] Режиссерская склейка (4 плана): " + " -> ".join(p.name for p in selected))
             return selected, offsets
 
@@ -75,11 +85,10 @@ class ShortsPipeline:
         if videos:
             rng = random.Random(seed)
             selected = rng.sample(videos, target_clips) if len(videos) >= target_clips else rng.choices(videos, k=target_clips)
-            clip_duration = total_duration / target_clips
             offsets = []
             for idx, bg in enumerate(selected):
                 dur = probe_duration(bg, s)
-                offsets.append(random_start(dur, clip_duration, None if seed is None else seed + idx))
+                offsets.append(random_start(dur, self._clip_durations[idx], None if seed is None else seed + idx))
             print(f"[VIDEO] Найдено {len(videos)} видео. Для ролика выбраны {target_clips} плана: " + " -> ".join(p.name for p in selected))
             return selected, offsets
 
@@ -90,10 +99,13 @@ class ShortsPipeline:
         print(f"[VIDEO] Используется одиночный фон: {background.name}")
         return [background], [st]
 
-    async def run(self, text: str, output_path: str | Path | None = None, seed: int | None = None) -> Path:
+    async def run(self, text: str | dict, output_path: str | Path | None = None, seed: int | None = None) -> Path:
         s = self.settings
         self.last_report = None
         self.last_stage = "preflight"
+        story = text if isinstance(text, dict) else None
+        if story is not None:
+            text = story.get("text") or " ".join(str(story.get("beats", {}).get(k, "")) for k in ("establishing", "tension", "subject", "aftermath"))
         if not isinstance(text, str) or not 3 <= len(text.strip()) <= s.max_text_chars:
             raise ValueError(f"Text must contain 3-{s.max_text_chars} characters")
         text = text.strip()
@@ -130,11 +142,11 @@ class ShortsPipeline:
                 write_ass(boundaries, ass, s.words_per_subtitle, s.font_name, s.font_size, s.assets_dir / "fonts")
 
                 self.last_stage = "background"
-                bg_list, start_offsets = self._select_backgrounds(duration, seed)
+                bg_list, start_offsets = self._select_backgrounds(duration, seed, story=story)
 
                 self.last_stage = "render"
                 event("render.started", output=output, duration=duration, clips=len(bg_list))
-                render_video(bg_list, audio, ass, partial, duration, start_offsets, s)
+                render_video(bg_list, audio, ass, partial, duration, start_offsets, s, clip_durations=getattr(self, "_clip_durations", None))
                 self.last_stage = "validation"
                 report = validate_output(partial, s, expected_duration=duration)
                 self.last_stage = "output"
