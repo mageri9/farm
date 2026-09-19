@@ -29,6 +29,21 @@ class ShortsPipeline:
         if not has_pool and not s.background_path.is_file():
             raise ValueError(f"No MP4 in assets/backgrounds, assets or {s.background_path}")
 
+    def _dramaturgical_candidates(self) -> list[list[Path]] | None:
+        """Ищет 4 режиссерские папки: Масштаб -> Напряжение -> Человек -> Финал."""
+        s = self.settings
+        for parent in (s.assets_dir / "backgrounds", s.assets_dir / "video", s.assets_dir):
+            beats = []
+            for name in ("01_establishing", "02_tension", "03_subject", "04_aftermath"):
+                folder = parent / name
+                files = sorted(p for p in folder.glob("*.mp4") if p.is_file())
+                if not files:
+                    break
+                beats.append(files)
+            if len(beats) == 4:
+                return beats
+        return None
+
     def _background_candidates(self) -> list[Path]:
         for directory in (self.settings.assets_dir / "backgrounds", self.settings.assets_dir):
             videos = sorted(path for path in directory.glob("*.mp4") if path.is_file())
@@ -40,7 +55,21 @@ class ShortsPipeline:
         s = self.settings
         if target_clips < 1:
             raise ValueError("target_clips must be positive")
-        # Ищем mp4 в assets/backgrounds/, а если пусто — прямо в assets/
+
+        # 1. Сначала проверяем режиссерские папки (4 плана по драматургии)
+        beats = self._dramaturgical_candidates()
+        if beats and target_clips == 4:
+            rng = random.Random(seed)
+            selected = [rng.choice(beat_files) for beat_files in beats]
+            clip_duration = total_duration / target_clips
+            offsets = []
+            for idx, bg in enumerate(selected):
+                dur = probe_duration(bg, s)
+                offsets.append(random_start(dur, clip_duration, None if seed is None else seed + idx))
+            print(f"[VIDEO] Режиссерская склейка (4 плана): " + " -> ".join(p.name for p in selected))
+            return selected, offsets
+
+        # 2. Fail-soft fallback: если папки пустые, берем как раньше из общей кучи
         videos = self._background_candidates()
 
         if videos:
@@ -55,7 +84,7 @@ class ShortsPipeline:
             return selected, offsets
 
         # Резерв на одиночный фон
-        background = videos[0] if videos else s.background_path
+        background = s.background_path
         bg_dur = probe_duration(background, s)
         st = 0.0 if s.loop_background and bg_dur < total_duration else random_start(bg_dur, total_duration, seed)
         print(f"[VIDEO] Используется одиночный фон: {background.name}")

@@ -2,7 +2,7 @@
 
 python generate.py --count 3 --category all
 
-.\.venv\Scripts\python.exe generate.py --count 1 --category all
+.\.venv\Scripts\python.exe generate.py --count 3 --category all
 
 .\.venv\Scripts\python.exe generate.py --story-file story.txt
 
