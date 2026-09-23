@@ -92,6 +92,9 @@ def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
                     with tempfile.TemporaryDirectory(dir=folder) as staging:
                         for index, source in enumerate(raw, 1):
                             with Image.open(source) as image:
+                                max_dim = 1200
+                                if max(image.size) > max_dim:
+                                    image.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
                                 result = remove(image)
                                 result.save(Path(staging) / f"{index}.png")
                         converted = [folder / f"{index}.png" for index in range(1, len(raw) + 1)]
