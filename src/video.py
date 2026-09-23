@@ -61,6 +61,77 @@ def random_start(background_duration: float, segment_duration: float, seed: int 
     return rng.uniform(0.0, available)
 
 
+OVERLAY_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
+    """Ассеты предмета: assets/items/{slug}/*.ext по имени, иначе assets/items/{slug}.ext.
+
+    Fail-soft: при отсутствии файлов возвращает пустой список, рендер идет на одних фонах.
+    """
+    slug = (slug or "").strip()
+    if not slug or slug != Path(slug).name or slug in {".", ".."}:
+        return []
+    items = Path(assets_dir) / "items"
+    folder = items / slug
+    try:
+        if folder.is_dir():
+            found = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in OVERLAY_SUFFIXES]
+            if found:
+                return sorted(found, key=lambda p: p.name.casefold())
+        return [p for suffix in OVERLAY_SUFFIXES if (p := items / f"{slug}{suffix}").is_file()]
+    except OSError:
+        return []
+
+
+def overlay_spans(clip_durations: Sequence[float] | None, image_count: int) -> list[tuple[float, float]]:
+    """Окна показа картинок, привязанные к адаптивным таймингам битов.
+
+    Бит 1 (establishing) и бит 4 (aftermath) — только фон. Одна картинка растягивается
+    на биты 2-3; две и более ложатся на бит 2 и бит 3 соответственно.
+    """
+    if image_count < 1 or not clip_durations or len(clip_durations) != 4:
+        return []
+    if any(not math.isfinite(d) or d <= 0 for d in clip_durations):
+        return []
+    edges = [0.0]
+    for value in clip_durations:
+        edges.append(edges[-1] + float(value))
+    start_beat_2, end_beat_2, end_beat_3 = edges[1], edges[2], edges[3]
+    if image_count == 1:
+        return [(start_beat_2, end_beat_3)]
+    return [(start_beat_2, end_beat_2), (end_beat_2, end_beat_3)]
+
+
+def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[float, float]],
+                   first_input: int, settings: Settings) -> tuple[list[str], str]:
+    """Строит filter_complex для наложения картинок поверх метки base."""
+    parts: list[str] = []
+    current = base
+    pos_x = f"(W-w)/2"
+    pos_y = f"(H-h)/2-{settings.overlay_offset_y}"
+    for order, (_image, (start, end)) in enumerate(zip(images, spans)):
+        idx = first_input + order
+        span = end - start
+        fade = min(settings.overlay_fade, span / 2.0)
+        label = f"ov{order}"
+        # Фейды считаются от нуля, затем tpad сдвигает окно прозрачными кадрами:
+        # overlay всегда имеет кадр на втором входе и граф не встает в ожидание.
+        chain = (f"[{idx}:v]scale={settings.overlay_width}:-1,format=rgba,"
+                 f"trim=duration={span:.3f},setpts=PTS-STARTPTS")
+        if fade > 0:
+            chain += (f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
+                      f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1")
+        if start > 0:
+            chain += f",tpad=start_duration={start:.3f}:start_mode=add:color=0x00000000"
+        parts.append(chain + f"[{label}];")
+        nxt = f"ovout{order}"
+        parts.append(f"[{current}][{label}]overlay={pos_x}:{pos_y}:"
+                     f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[{nxt}];")
+        current = nxt
+    return parts, current
+
+
 def render_video(
     backgrounds: Sequence[Path] | Path,
     audio: Path,
@@ -71,6 +142,7 @@ def render_video(
     settings: Settings,
     target_clips: int = 4,
     clip_durations: Sequence[float] | float | None = None,
+    overlays: Sequence[Path] | None = None,
 ) -> None:
     executable = check_executable(settings.ffmpeg)
     subtitle_path = escape_subtitle_path(subtitles)
@@ -81,6 +153,8 @@ def render_video(
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
     ambient = settings.ambient_path
     has_ambient = ambient.is_file()
+    # Fail-soft: не более двух картинок, только реально существующие файлы.
+    overlay_images = [p for p in list(overlays or [])[:2] if Path(p).is_file()]
 
     cmd = [executable, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
 
@@ -138,8 +212,23 @@ def render_video(
         ambient_idx = audio_idx + 1
         if has_ambient:
             cmd += ["-stream_loop", "-1", "-i", str(ambient)]
-        # Keep concat and subtitles in one chain so the labelled output remains connected.
-        filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{subtitle_filter}[vout]")
+
+        # Картинки предмета идут последними, чтобы не сдвигать индексы аудио-входов.
+        spans = overlay_spans(durations, len(overlay_images)) if len(bg_list) == 4 else []
+        overlay_images = overlay_images[:len(spans)]
+        overlay_first_idx = (ambient_idx + 1) if has_ambient else (audio_idx + 1)
+        for image, (start, end) in zip(overlay_images, spans):
+            cmd += ["-loop", "1", "-t", f"{end - start:.3f}", "-i", str(image)]
+
+        if overlay_images:
+            # Картинка ложится на фон до прожига субтитров, чтобы не перекрывать караоке.
+            filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0[vbg];")
+            chain, last = _overlay_chain("vbg", overlay_images, spans, overlay_first_idx, settings)
+            filter_complex += chain
+            filter_complex.append(f"[{last}]{subtitle_filter}[vout]")
+        else:
+            # Keep concat and subtitles in one chain so the labelled output remains connected.
+            filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{subtitle_filter}[vout]")
         if has_ambient:
             filter_complex.append(
                 f";[{ambient_idx}:a]volume=0.08[amb];"

@@ -6,13 +6,21 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import Sequence
 from uuid import uuid4
 
 from .config import Settings
 from .runtime import event, file_lock, logger, safe_error
 from .subtitles import write_ass
 from .tts import TTSError, generate_tts
-from .video import check_executable, probe_duration, random_start, render_video, validate_output
+from .video import (
+    check_executable,
+    find_item_images,
+    probe_duration,
+    random_start,
+    render_video,
+    validate_output,
+)
 
 
 class ShortsPipeline:
@@ -99,7 +107,15 @@ class ShortsPipeline:
         print(f"[VIDEO] Используется одиночный фон: {background.name}")
         return [background], [st]
 
-    async def run(self, text: str | dict, output_path: str | Path | None = None, seed: int | None = None) -> Path:
+    def _overlay_images(self, story: dict | None, overlays: Sequence[Path] | None) -> list[Path]:
+        """Явно переданные картинки важнее, чем найденные по slug. Fail-soft: [] допустимо."""
+        if overlays:
+            return [Path(p) for p in overlays if Path(p).is_file()]
+        slug = str((story or {}).get("item_slug") or "").strip()
+        return find_item_images(self.settings.assets_dir, slug) if slug else []
+
+    async def run(self, text: str | dict, output_path: str | Path | None = None, seed: int | None = None,
+                  overlays: Sequence[Path] | None = None) -> Path:
         s = self.settings
         self.last_report = None
         self.last_stage = "preflight"
@@ -131,8 +147,8 @@ class ShortsPipeline:
                                                 attempts=s.retry_attempts, retry_delay=s.retry_delay,
                                                 timeout=s.tts_timeout, settings=s)
                 duration = probe_duration(audio, s)
-                if duration > 26.5:
-                    event("tts.duration_rejected", duration=duration, limit=26.5, output=output)
+                if duration > s.max_speech_seconds:
+                    event("tts.duration_rejected", duration=duration, limit=s.max_speech_seconds, output=output)
                     raise TTSError(
                         "Previous script exceeded the TTS duration limit. "
                         "Rewrite it shorter, simpler and more conversational."
@@ -145,8 +161,15 @@ class ShortsPipeline:
                 bg_list, start_offsets = self._select_backgrounds(duration, seed, story=story)
 
                 self.last_stage = "render"
-                event("render.started", output=output, duration=duration, clips=len(bg_list))
-                render_video(bg_list, audio, ass, partial, duration, start_offsets, s, clip_durations=getattr(self, "_clip_durations", None))
+                overlay_images = self._overlay_images(story, overlays)
+                if overlay_images:
+                    print(f"[VIDEO] Оверлеи предмета ({len(overlay_images)}): "
+                          + ", ".join(p.name for p in overlay_images))
+                event("render.started", output=output, duration=duration, clips=len(bg_list),
+                      overlays=len(overlay_images))
+                render_video(bg_list, audio, ass, partial, duration, start_offsets, s,
+                             clip_durations=getattr(self, "_clip_durations", None),
+                             overlays=overlay_images)
                 self.last_stage = "validation"
                 report = validate_output(partial, s, expected_duration=duration)
                 self.last_stage = "output"

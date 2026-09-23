@@ -40,6 +40,12 @@ class Settings:
     retry_attempts: int = 3
     retry_delay: float = 3.0
     max_text_chars: int = 20000
+    # Верхняя граница озвучки. Норматив сценария 75-85 слов -> 35-40 секунд.
+    max_speech_seconds: float = 44.0
+    # 2-Beat Adaptive Image Overlays: геометрия наложения картинки предмета.
+    overlay_width: int = 850
+    overlay_offset_y: int = 120
+    overlay_fade: float = 0.3
     loop_background: bool = True
     anyvoice_url: str = "https://anymodel.org/api/anyvoice/tts"
     anyvoice_reference_id: str = "dcd50b837c724daf898bb375c6ae4537"
@@ -68,6 +74,12 @@ class Settings:
             raise ValueError("Invalid encoding or subtitle settings")
         if self.max_text_chars < 3:
             raise ValueError("max_text_chars must be at least 3")
+        if not math.isfinite(self.max_speech_seconds) or self.max_speech_seconds <= 0:
+            raise ValueError("max_speech_seconds must be finite and positive")
+        if self.overlay_width < 2 or self.overlay_width > self.video_width:
+            raise ValueError("overlay_width must be between 2 and video_width")
+        if not math.isfinite(self.overlay_fade) or self.overlay_fade < 0:
+            raise ValueError("overlay_fade must be finite and non-negative")
 
     @classmethod
     def from_env(cls, **overrides):

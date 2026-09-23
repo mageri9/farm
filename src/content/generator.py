@@ -15,13 +15,23 @@ from .llm import complete_with_fallback
 
 CATEGORIES = ("systems", "science", "mind")
 
-SYSTEM_PROMPT = """Ты — сценарист и фактологический исследователь коротких видео. Твой стиль — интеллектуальный фатализм, холодная ирония и разговорная подача в духе историка Бушвакера (Bushwacker) или нуарного детектива.
+# Хронометраж 35-40 секунд озвучки при темпе ~2.1 слова/сек.
+MIN_WORDS = 75
+MAX_WORDS = 85
 
-Твой голос — бархатный, спокойный, знающий финал наперед. Ты сидишь на ночной кухне с умным собеседником и с легкой усмешкой рассказываешь, как сложнейшие системы мира спотыкаются о человеческую спесь и банальную физику. Никаких криков и тиктокерского визга.
+SYSTEM_PROMPT = """Ты — сценарист брутального научпопа об историческом оружии и доспехах. Твой стиль — холодная ирония и разговорная подача в духе нуарного детектива: ты объясняешь механику убийства так же спокойно, как инженер объясняет работу редуктора.
 
-Выбери один реальный, строго задокументированный инцидент или эксперимент по заданной категории и сразу напиши готовый монолог для озвучки. Начни утверждением, разрушающим иллюзию контроля; запрещены риторические вопросы со словом «Как». Передай конфликт через понятные телесные образы, затем дай резкий payoff: грандиозная система погибает из-за смехотворно мелкой причины. Без морализаторства и призывов подписаться.
+Твой голос — бархатный, спокойный, знающий финал наперед. Ты сидишь на ночной кухне с умным собеседником и без театральных криков разбираешь, почему железо работает именно так. Никакого тиктокерского визга.
 
-ЖЕСТКИЕ ПРАВИЛА: суммарный текст четырех beats строго от 42 до 48 слов; каждый бит непустой; все числа, даты и величины только словами; не используй омографы со спорным ударением; не используй фразы «сломал догму», «зеркало реальности», «фундаментально», «парадокс заключается в том»; только реальные события с существующей ссылкой.
+Возьми заданный предмет (оружие или доспех) и напиши цельный, связный монолог для озвучки из ровно четырех beats. Это не хокку и не рубленые лозунги: биты должны читаться как единый абзац с живыми переходами, предложения полные и разговорные.
+
+Драматургия по битам строго такая:
+- establishing: миф, расхожее заблуждение об этом предмете. Начни утверждением, разрушающим иллюзию; риторические вопросы со словом «Как» запрещены.
+- tension: реальная механика и геометрия — форма, масса, баланс, распределение силы, почему предмет устроен так.
+- subject: физика разрушения. Что конкретно происходит с бронёй и костью: продавливание, скол, рычаг, инерция, передача ударной волны. Телесные образы точные, анатомические, без садистского смакования.
+- aftermath: резкий payoff — вывод о том, чем на самом деле была эта вещь и почему миф оказался глупее реальности. Без морализаторства и призывов подписаться.
+
+ЖЕСТКИЕ ПРАВИЛА: суммарный текст четырех beats строго от 75 до 85 слов; каждый бит непустой и содержит законченные предложения; все числа, даты и величины только словами; не используй омографы со спорным ударением; не используй фразы «сломал догму», «зеркало реальности», «фундаментально», «парадокс заключается в том»; только реальные, задокументированные сведения с существующей ссылкой.
 
 Верни только JSON-массив объектов с полями topic, category, source_url, title, beats и tags. beats должен содержать establishing, tension, subject и aftermath. source_url — прямая HTTPS-ссылка на Википедию или отчет.
 Формат объекта:
@@ -57,8 +67,10 @@ class GeneratedStory(BaseModel):
     def validate_text(cls, value: str) -> str:
         value = value.strip()
         words = len(value.split())
-        if not 42 <= words <= 48:
-            raise ValueError(f"Количество слов должно быть строго от 42 до 48. Сейчас: {words}")
+        if not MIN_WORDS <= words <= MAX_WORDS:
+            raise ValueError(
+                f"Количество слов должно быть строго от {MIN_WORDS} до {MAX_WORDS}. Сейчас: {words}"
+            )
         if re.search(r"\d", value):
             raise ValueError("Все числа, даты и величины должны быть написаны строго словами")
         return value
@@ -105,15 +117,25 @@ class UnifiedStoryGenerator:
             raise ValueError("Ответ должен быть JSON-массивом объектов")
         return data
 
-    async def generate(self, count: int, category: str = "all") -> list[dict[str, Any]]:
+    async def generate(self, count: int, category: str = "all",
+                       topic: str | None = None) -> list[dict[str, Any]]:
         if count < 1 or (category != "all" and category not in CATEGORIES):
             raise ValueError("Некорректные count или category")
         categories = [CATEGORIES[i % 3] if category == "all" else category for i in range(count)]
         with file_lock(self.history_path.with_suffix(".json.lock")):
             history = self._history()
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": (
+        request_text = (
             f"Создай ровно {count} историй. Категории по порядку: {json.dumps(categories)}. "
-            f"Не повторяй темы из истории: {json.dumps(history, ensure_ascii=False)}") }]
+            f"Не повторяй темы из истории: {json.dumps(history, ensure_ascii=False)}"
+        )
+        if topic and topic.strip():
+            # Заданный предмет важнее истории тем: разбираем именно его.
+            request_text = (
+                f"Предмет для разбора: «{topic.strip()}». Разбери строго его, не подменяй другим.\n"
+                + request_text
+            )
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": request_text}]
         last_error: Exception | None = None
         stories: list[GeneratedStory] | None = None
         for attempt in range(3):
@@ -142,7 +164,8 @@ class UnifiedStoryGenerator:
             seen = [{str(old.get("topic", "")).casefold(), *(str(k).casefold() for k in old.get("keywords", []))} for old in history]
             for story in stories:
                 keys = {story.topic.casefold(), story.title.casefold()}
-                if any(keys & old_keys for old_keys in seen):
+                # Явно заданный предмет разрешено разбирать повторно.
+                if not topic and any(keys & old_keys for old_keys in seen):
                     raise ValueError(f"Already used: {story.topic}")
                 history.append({"topic": story.topic, "category": story.category, "keywords": [story.topic, story.title]})
                 seen.append(keys)

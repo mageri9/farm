@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -18,8 +19,16 @@ from src.content.adapter import StoryAdapter
 from src.content.researcher import FactResearcher
 from src.pipeline import ShortsPipeline
 from src.runtime import atomic_json, atomic_text, batch_status, log_failure, log_to, safe_error
+from src.video import find_item_images
 
 ROOT = Path(__file__).resolve().parent
+
+
+def slugify(value: str) -> str:
+    """Имя папки ассетов из темы: пробелы в дефисы, только безопасные символы."""
+    slug = re.sub(r"[\s_]+", "-", (value or "").strip().casefold())
+    slug = re.sub(r"[^\w\-]", "", slug, flags=re.UNICODE).strip("-")
+    return slug
 
 
 def positive_int(value: str) -> int:
@@ -31,6 +40,8 @@ def positive_int(value: str) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="One-button factual Shorts generator")
+    p.add_argument("topic_or_slug", nargs="*", default=[],
+                   help="Тема/slug предмета, например: python generate.py клевец")
     p.add_argument("--count", type=positive_int, default=3)
     p.add_argument("--category", choices=["all", "systems", "science", "mind"], default="all")
     p.add_argument("--dry-run", action="store_true")
@@ -72,6 +83,12 @@ async def main_async(args: argparse.Namespace) -> int:
         if not args.dry_run:
             pipeline = ShortsPipeline(settings)
             pipeline.preflight()
+        topic = " ".join(args.topic_or_slug).strip()
+        slug = slugify(topic)
+        overlays = find_item_images(settings.assets_dir, slug) if slug else []
+        if topic:
+            progress("ASSETS", f"Предмет «{topic}» (slug: {slug}); картинок найдено: {len(overlays)}"
+                     + (f" -> {', '.join(p.name for p in overlays)}" if overlays else " (рендер на одних фонах)"))
         custom_story = None
         if args.story_file:
             custom_story = Path(args.story_file).read_text(encoding="utf-8")
@@ -95,14 +112,15 @@ async def main_async(args: argparse.Namespace) -> int:
                 await asyncio.sleep(1)
                 batch = ROOT / "output" / f"batch_{datetime.now():%Y%m%d_%H%M%S}"
         logs.enter_context(log_to(batch / "render.jsonl"))
-        progress("START", f"Батч {batch.name}: {'готовый сценарий' if custom_mode else f'ищем {args.count} фактов ({args.category})'}")
+        target = topic or args.category
+        progress("START", f"Батч {batch.name}: {'готовый сценарий' if custom_mode else f'ищем {args.count} фактов ({target})'}")
         if custom_mode:
-            facts = [{"title": args.title or " ".join(custom_story.split()[:7]), "raw_data": custom_story,
-                      "topic": args.title or "custom", "category": args.category, "sources": []}]
+            facts = [{"title": args.title or topic or " ".join(custom_story.split()[:7]), "raw_data": custom_story,
+                      "topic": args.title or topic or "custom", "category": args.category, "sources": []}]
         else:
             stage = "generation"
             generator = UnifiedStoryGenerator(history_path=ROOT / "work" / "facts_history.json")
-            facts = await generator.generate(args.count, args.category)
+            facts = await generator.generate(args.count, args.category, topic=topic or None)
             atomic_json(batch / "facts.json", facts)
             progress("GENERATION", f"Создано историй: {len(facts)}")
             if not facts:
@@ -129,6 +147,8 @@ async def main_async(args: argparse.Namespace) -> int:
                     story = dict(fact)
                     story["sources"] = [{"url": fact.get("source_url", ""), "title": fact.get("topic", "")}]
                 story.update(filename=f"video_{i:02d}.mp4", status="dry-run" if args.dry_run else "pending")
+                if slug:
+                    story["item_slug"] = slug
                 stories.append(story)
                 stage = "script.output"
                 atomic_text(batch / f"story_{i:02d}.txt", story["text"] + "\n")
@@ -137,7 +157,8 @@ async def main_async(args: argparse.Namespace) -> int:
                 if pipeline is not None:
                     stage = "video"
                     progress(f"VIDEO {i}/{args.count}", f"Озвучка и рендер {story['filename']}")
-                    await pipeline.run(story["text"], output_path=batch / story["filename"])
+                    await pipeline.run(story["text"], output_path=batch / story["filename"],
+                                       overlays=overlays)
                     story.update(status="rendered", report=pipeline.last_report)
                     progress(f"VIDEO {i}/{args.count}", f"Готово: {story['filename']}; {pipeline.last_report}")
                 successful += 1
