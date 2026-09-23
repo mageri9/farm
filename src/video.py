@@ -132,8 +132,8 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
     """Строит filter_complex для наложения картинок поверх метки base."""
     parts: list[str] = []
     current = base
-    pos_x = f"(W-w)/2-100"
-    pos_y = f"(H-h)/2-{settings.overlay_offset_y}"
+    pos_x = "(W-w)/2"
+    pos_y = "(H-h)/2-120"
     for order, (_image, (start, end)) in enumerate(zip(images, spans)):
         idx = first_input + order
         span = end - start
@@ -156,7 +156,7 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
         blurred = f"blursh{order}"
         parts.append(f"[{shadow}]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=12:12[{blurred}];")
         with_shadow = f"ovshadow{order}"
-        parts.append(f"[{current}][{blurred}]overlay={pos_x}+12:{pos_y}+16:"
+        parts.append(f"[{current}][{blurred}]overlay={pos_x}+14:{pos_y}+18:"
                      f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[{with_shadow}];")
         nxt = f"ovout{order}"
         parts.append(f"[{with_shadow}][{label}]overlay={pos_x}:{pos_y}:"
@@ -181,7 +181,7 @@ def render_video(
     subtitle_path = escape_subtitle_path(subtitles)
     fonts_dir = escape_subtitle_path(settings.assets_dir / "fonts")
     subtitle_filter = f"ass=filename='{subtitle_path}':fontsdir='{fonts_dir}'"
-    cinematic_grade = "eq=contrast=1.18:brightness=-0.06:saturation=0.72,vignette=PI/4"
+    cinematic_grade = "eq=contrast=1.32:brightness=-0.14:saturation=0.48,vignette=PI/3"
 
     bg_list = [backgrounds] if isinstance(backgrounds, Path) else list(backgrounds)
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
