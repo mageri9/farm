@@ -25,7 +25,7 @@ class Settings:
     crf: int = 22
     preset: str = "veryfast"
     audio_bitrate: str = "192k"
-    font_name: str = "Montserrat"
+    font_name: str = "Forum"
     font_size: int = 80
     cleanup_work: bool = True
     root: Path = Path(__file__).resolve().parent.parent

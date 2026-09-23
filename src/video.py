@@ -132,7 +132,7 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
     """Строит filter_complex для наложения картинок поверх метки base."""
     parts: list[str] = []
     current = base
-    pos_x = f"(W-w)/2"
+    pos_x = f"(W-w)/2-100"
     pos_y = f"(H-h)/2-{settings.overlay_offset_y}"
     for order, (_image, (start, end)) in enumerate(zip(images, spans)):
         idx = first_input + order
@@ -151,9 +151,15 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
                       f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1")
         if start > 0:
             chain += f",tpad=start_duration={start:.3f}:start_mode=add:color=0x00000000"
-        parts.append(chain + f"[{label}];")
+        shadow = f"sh{order}"
+        parts.append(chain + f",split[{label}][{shadow}];")
+        blurred = f"blursh{order}"
+        parts.append(f"[{shadow}]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=12:12[{blurred}];")
+        with_shadow = f"ovshadow{order}"
+        parts.append(f"[{current}][{blurred}]overlay={pos_x}+12:{pos_y}+16:"
+                     f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[{with_shadow}];")
         nxt = f"ovout{order}"
-        parts.append(f"[{current}][{label}]overlay={pos_x}:{pos_y}:"
+        parts.append(f"[{with_shadow}][{label}]overlay={pos_x}:{pos_y}:"
                      f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[{nxt}];")
         current = nxt
     return parts, current
@@ -174,7 +180,8 @@ def render_video(
     executable = check_executable(settings.ffmpeg)
     subtitle_path = escape_subtitle_path(subtitles)
     fonts_dir = escape_subtitle_path(settings.assets_dir / "fonts")
-    subtitle_filter = f"ass='{subtitle_path}':fontsdir='{fonts_dir}'"
+    subtitle_filter = f"ass=filename='{subtitle_path}':fontsdir='{fonts_dir}'"
+    cinematic_grade = "eq=contrast=1.18:brightness=-0.06:saturation=0.72,vignette=PI/4"
 
     bg_list = [backgrounds] if isinstance(backgrounds, Path) else list(backgrounds)
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
@@ -204,7 +211,7 @@ def render_video(
         cmd += ["-ss", f"{st:.3f}", "-i", str(bg), "-i", str(audio)]
         if has_ambient:
             cmd += ["-stream_loop", "-1", "-i", str(ambient)]
-        vf = f"{crop_scale},setpts=PTS-STARTPTS,{subtitle_filter}"
+        vf = f"{crop_scale},setpts=PTS-STARTPTS,{cinematic_grade},{subtitle_filter}"
         if has_ambient:
             cmd += [
                 "-vf", vf, "-filter_complex",
@@ -251,13 +258,13 @@ def render_video(
 
         if overlay_images:
             # Картинка ложится на фон до прожига субтитров, чтобы не перекрывать караоке.
-            filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0[vbg];")
+            filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{cinematic_grade}[vbg];")
             chain, last = _overlay_chain("vbg", overlay_images, spans, overlay_first_idx, settings)
             filter_complex += chain
             filter_complex.append(f"[{last}]{subtitle_filter}[vout]")
         else:
             # Keep concat and subtitles in one chain so the labelled output remains connected.
-            filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{subtitle_filter}[vout]")
+            filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{cinematic_grade},{subtitle_filter}[vout]")
         if has_ambient:
             filter_complex.append(
                 f";[{ambient_idx}:a]volume=0.08[amb];"
