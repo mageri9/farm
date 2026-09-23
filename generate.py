@@ -88,6 +88,7 @@ async def main_async(args: argparse.Namespace) -> int:
             pipeline.preflight()
         topic = " ".join(args.topic_or_slug).strip()
         slug = slugify(topic)
+        stage = "assets.auto_cutout"
         overlays = find_item_images(settings.assets_dir, slug) if slug else []
         if topic:
             progress("ASSETS", f"Предмет «{topic}» (slug: {slug}); картинок найдено: {len(overlays)}"

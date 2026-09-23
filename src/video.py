@@ -5,6 +5,7 @@ import math
 import random
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -76,7 +77,34 @@ def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
     folder = items / slug
     try:
         if folder.is_dir():
+            pngs = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".png"]
+            raw = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".webp"}), key=lambda p: p.name.casefold())
+            numbered = [p for p in pngs if p.stem.isdigit() and int(p.stem) > 0]
+            if numbered:
+                return sorted(numbered, key=lambda p: (int(p.stem), p.name))
+            raw = [p for p in raw if p.stem.casefold() not in {png.stem.casefold() for png in pngs}]
+            if raw and not numbered:
+                try:
+                    from rembg import remove
+                    from PIL import Image
+                    print(f"[AUTO-CUTOUT] Вырезаем фон для {len(raw)} изображений предмета...", flush=True)
+                    # Publish only after the entire batch succeeds, so a failed cutout can be retried.
+                    with tempfile.TemporaryDirectory(dir=folder) as staging:
+                        for index, source in enumerate(raw, 1):
+                            with Image.open(source) as image:
+                                result = remove(image)
+                                result.save(Path(staging) / f"{index}.png")
+                        converted = [folder / f"{index}.png" for index in range(1, len(raw) + 1)]
+                        for target in converted:
+                            (Path(staging) / target.name).replace(target)
+                    return converted
+                except Exception as exc:
+                    # Keep the original assets usable when optional cutout dependencies fail.
+                    print(f"[AUTO-CUTOUT] Ошибка: {exc}; используем исходные изображения", flush=True)
+                    return raw
             found = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in OVERLAY_SUFFIXES]
+            if pngs:
+                return sorted(pngs, key=lambda p: p.name.casefold())
             if found:
                 return sorted(found, key=lambda p: p.name.casefold())
         return [p for suffix in OVERLAY_SUFFIXES if (p := items / f"{slug}{suffix}").is_file()]
@@ -89,9 +117,10 @@ def overlay_spans(num_images: int, total_duration: float) -> list[tuple[float, f
     if num_images < 1 or total_duration <= 0 or not math.isfinite(total_duration):
         return []
     num_images = min(num_images, 4)
-    specs = {1: [(2.0, 6.0)], 2: [(2.0, 4.5), (total_duration * .45, 4.5)],
-             3: [(2.0, 4.0), (total_duration * .35, 4.0), (total_duration * .65, 4.0)],
-             4: [(2.0, 3.5), (total_duration * .28, 3.5), (total_duration * .52, 3.5), (total_duration * .72, 3.5)]}
+    specs = {1: [(2.0, 8.0)], 2: [(2.0, 6.0), (total_duration * .45, 6.0)],
+             3: [(2.0, 5.5), (total_duration * .35, 5.5), (total_duration * .65, 5.5)],
+             4: [(2.0, 5.0), (total_duration * .28, 5.0), (total_duration * .52, 5.0),
+                 (max(0.0, min(total_duration * .72, total_duration - 4.5)), 5.0)]}
     return [(start, min(total_duration, start + dur)) for start, dur in specs[num_images] if start < total_duration]
 
 
@@ -109,8 +138,11 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
         label = f"ov{order}"
         # Фейды считаются от нуля, затем tpad сдвигает окно прозрачными кадрами:
         # overlay всегда имеет кадр на втором входе и граф не встает в ожидание.
-        chain = (f"[{idx}:v]scale='min(850,iw)':'min(900,ih)':force_original_aspect_ratio=decrease,format=rgba,"
-                 f"trim=duration={span:.3f},setpts=PTS-STARTPTS")
+        # Local timestamps start at zero; the second scale preserves alpha and adds 4% zoom.
+        chain = (f"[{idx}:v]scale='min({settings.overlay_width},iw)':'min(1050,ih)':"
+                 f"force_original_aspect_ratio=decrease,format=rgba,"
+                 f"trim=duration={span:.3f},setpts=PTS-STARTPTS,"
+                 f"scale=eval=frame:w='max(2,trunc(iw*(1+0.04*clip(t/{span:.3f},0,1))/2)*2)':h=-1,setsar=1")
         if fade > 0:
             chain += (f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
                       f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1")

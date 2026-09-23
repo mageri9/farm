@@ -43,8 +43,8 @@ class Settings:
     # Верхняя граница озвучки. Норматив сценария 75-85 слов -> 35-40 секунд.
     max_speech_seconds: float = 44.0
     # Image overlay geometry.
-    overlay_width: int = 850
-    overlay_offset_y: int = 100
+    overlay_width: int = 920
+    overlay_offset_y: int = 110
     overlay_fade: float = 0.3
     loop_background: bool = True
     anyvoice_url: str = "https://anymodel.org/api/anyvoice/tts"
