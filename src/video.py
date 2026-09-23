@@ -84,23 +84,15 @@ def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
         return []
 
 
-def overlay_spans(clip_durations: Sequence[float] | None, image_count: int) -> list[tuple[float, float]]:
-    """Окна показа картинок, привязанные к адаптивным таймингам битов.
-
-    Бит 1 (establishing) и бит 4 (aftermath) — только фон. Одна картинка растягивается
-    на биты 2-3; две и более ложатся на бит 2 и бит 3 соответственно.
-    """
-    if image_count < 1 or not clip_durations or len(clip_durations) != 4:
+def overlay_spans(num_images: int, total_duration: float) -> list[tuple[float, float]]:
+    """Return (start, end) windows, clipped to the video duration."""
+    if num_images < 1 or total_duration <= 0 or not math.isfinite(total_duration):
         return []
-    if any(not math.isfinite(d) or d <= 0 for d in clip_durations):
-        return []
-    edges = [0.0]
-    for value in clip_durations:
-        edges.append(edges[-1] + float(value))
-    start_beat_2, end_beat_2, end_beat_3 = edges[1], edges[2], edges[3]
-    if image_count == 1:
-        return [(start_beat_2, end_beat_3)]
-    return [(start_beat_2, end_beat_2), (end_beat_2, end_beat_3)]
+    num_images = min(num_images, 4)
+    specs = {1: [(2.0, 6.0)], 2: [(2.0, 4.5), (total_duration * .45, 4.5)],
+             3: [(2.0, 4.0), (total_duration * .35, 4.0), (total_duration * .65, 4.0)],
+             4: [(2.0, 3.5), (total_duration * .28, 3.5), (total_duration * .52, 3.5), (total_duration * .72, 3.5)]}
+    return [(start, min(total_duration, start + dur)) for start, dur in specs[num_images] if start < total_duration]
 
 
 def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[float, float]],
@@ -117,7 +109,7 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
         label = f"ov{order}"
         # Фейды считаются от нуля, затем tpad сдвигает окно прозрачными кадрами:
         # overlay всегда имеет кадр на втором входе и граф не встает в ожидание.
-        chain = (f"[{idx}:v]scale={settings.overlay_width}:-1,format=rgba,"
+        chain = (f"[{idx}:v]scale='min(850,iw)':'min(900,ih)':force_original_aspect_ratio=decrease,format=rgba,"
                  f"trim=duration={span:.3f},setpts=PTS-STARTPTS")
         if fade > 0:
             chain += (f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
@@ -153,8 +145,8 @@ def render_video(
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
     ambient = settings.ambient_path
     has_ambient = ambient.is_file()
-    # Fail-soft: не более двух картинок, только реально существующие файлы.
-    overlay_images = [p for p in list(overlays or [])[:2] if Path(p).is_file()]
+    # Fail-soft: use at most four existing images.
+    overlay_images = [p for p in list(overlays or [])[:4] if Path(p).is_file()]
 
     cmd = [executable, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
 
@@ -164,9 +156,11 @@ def render_video(
         f"(in_h-{settings.video_height})/2,setsar=1,fps={settings.fps}"
     )
 
+    if not bg_list:
+        raise ValueError("At least one background is required")
     if target_clips < 1:
         raise ValueError("target_clips must be positive")
-    if len(bg_list) <= 1:
+    if len(bg_list) == 1 and not overlay_images:
         # Одиночный фон (классический режим)
         bg = bg_list[0]
         st = starts[0] if starts else 0.0
@@ -203,7 +197,7 @@ def render_video(
             dur = durations[idx]
             cmd += ["-stream_loop", "-1", "-ss", f"{st:.3f}", "-i", str(bg)]
             filter_complex.append(
-                f"[{idx}:v]trim=duration={dur:.3f},{crop_scale},setpts=PTS-STARTPTS[v{idx}];"
+                f"[{idx}:v]trim=duration={dur},{crop_scale},setpts=PTS-STARTPTS[v{idx}];"
             )
             concat_inputs += f"[v{idx}]"
 
@@ -214,7 +208,7 @@ def render_video(
             cmd += ["-stream_loop", "-1", "-i", str(ambient)]
 
         # Картинки предмета идут последними, чтобы не сдвигать индексы аудио-входов.
-        spans = overlay_spans(durations, len(overlay_images)) if len(bg_list) == 4 else []
+        spans = overlay_spans(len(overlay_images), duration)
         overlay_images = overlay_images[:len(spans)]
         overlay_first_idx = (ambient_idx + 1) if has_ambient else (audio_idx + 1)
         for image, (start, end) in zip(overlay_images, spans):
@@ -296,3 +290,4 @@ def validate_output(path: Path, settings: Settings, expected_duration: float | N
     if abs(fps - settings.fps) > 0.5:
         raise VideoError(f"Output validation failed: expected {settings.fps} FPS, got {fps:.2f}.")
     return {"duration": duration, "fps": fps, "audio_codec": audio.get("codec_name", "unknown")}
+

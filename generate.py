@@ -42,7 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="One-button factual Shorts generator")
     p.add_argument("topic_or_slug", nargs="*", default=[],
                    help="Тема/slug предмета, например: python generate.py клевец")
-    p.add_argument("--count", type=positive_int, default=3)
+    p.add_argument("--count", type=positive_int, default=None)
     p.add_argument("--category", choices=["all", "systems", "science", "mind"], default="all")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--voice", default="ru-RU-DmitryNeural")
@@ -51,7 +51,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--story", help="Готовый текст сценария")
     p.add_argument("--story-file", help="Путь к TXT-файлу со сценарием")
     p.add_argument("--title", help="Заголовок истории")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.count is None:
+        args.count = 1 if args.topic_or_slug else 3
+    return args
 
 
 def posting(story: dict, filename: str, index: int, status: str) -> str:

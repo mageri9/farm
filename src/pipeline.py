@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import random
 import shutil
 import tempfile
@@ -34,78 +35,34 @@ class ShortsPipeline:
         check_executable(s.ffmpeg)
         check_executable(s.ffprobe)
         has_pool = bool(self._background_candidates())
-        if not has_pool and not s.background_path.is_file():
-            raise ValueError(f"No MP4 in assets/backgrounds, assets or {s.background_path}")
-
-    def _dramaturgical_candidates(self) -> list[list[Path]] | None:
-        """Ищет 4 режиссерские папки: Масштаб -> Напряжение -> Человек -> Финал."""
-        s = self.settings
-        for parent in (s.assets_dir / "backgrounds", s.assets_dir / "video", s.assets_dir):
-            beats = []
-            for name in ("01_establishing", "02_tension", "03_subject", "04_aftermath"):
-                folder = parent / name
-                files = sorted(p for p in folder.glob("*.mp4") if p.is_file())
-                if not files:
-                    break
-                beats.append(files)
-            if len(beats) == 4:
-                return beats
-        return None
+        if not has_pool:
+            raise ValueError(f"No MP4 or MOV in {s.assets_dir / 'backgrounds'}")
 
     def _background_candidates(self) -> list[Path]:
-        for directory in (self.settings.assets_dir / "backgrounds", self.settings.assets_dir):
-            videos = sorted(path for path in directory.glob("*.mp4") if path.is_file())
-            if videos:
-                return videos
-        return []
+        directory = self.settings.assets_dir / "backgrounds"
+        return sorted(path for path in directory.iterdir() if path.is_file() and path.suffix.lower() in {".mp4", ".mov"}) if directory.is_dir() else []
 
     def _select_backgrounds(self, total_duration: float, seed: int | None = None, target_clips: int = 4, story: dict | None = None) -> tuple[list[Path], list[float]]:
         s = self.settings
-        if target_clips < 1:
-            raise ValueError("target_clips must be positive")
-        raw_beats = story.get("beats") if isinstance(story, dict) else getattr(story, "beats", None)
-        if isinstance(raw_beats, dict):
-            beat_values = raw_beats
-        elif raw_beats is not None:
-            beat_values = {name: getattr(raw_beats, name, "") for name in ("establishing", "tension", "subject", "aftermath")}
-        else:
-            beat_values = {}
-        counts = [len(str(beat_values.get(name, "")).split()) for name in ("establishing", "tension", "subject", "aftermath")]
-        self._clip_durations = ([c / sum(counts) * total_duration for c in counts]
-                                if target_clips == 4 and all(counts) else [total_duration / target_clips] * target_clips)
-        print(f"[VIDEO] Адаптивные тайминги планов (сек): {[round(t, 3) for t in self._clip_durations]}")
+        if not math.isfinite(total_duration) or total_duration <= 0:
+            raise ValueError("total_duration must be positive and finite")
+        num_clips = max(1, math.ceil(total_duration / 9.0))
+        self._clip_durations = [total_duration / num_clips] * num_clips
+        print(f"[VIDEO] Равные тайминги планов (сек): {[round(t, 3) for t in self._clip_durations]}")
 
-        # 1. Сначала проверяем режиссерские папки (4 плана по драматургии)
-        beats = self._dramaturgical_candidates()
-        if beats and target_clips == 4:
-            rng = random.Random(seed)
-            selected = [rng.choice(beat_files) for beat_files in beats]
-            offsets = []
-            for idx, bg in enumerate(selected):
-                dur = probe_duration(bg, s)
-                offsets.append(random_start(dur, self._clip_durations[idx], None if seed is None else seed + idx))
-            print(f"[VIDEO] Режиссерская склейка (4 плана): " + " -> ".join(p.name for p in selected))
-            return selected, offsets
-
-        # 2. Fail-soft fallback: если папки пустые, берем как раньше из общей кучи
         videos = self._background_candidates()
 
         if videos:
             rng = random.Random(seed)
-            selected = rng.sample(videos, target_clips) if len(videos) >= target_clips else rng.choices(videos, k=target_clips)
+            selected = rng.sample(videos, num_clips) if len(videos) >= num_clips else rng.choices(videos, k=num_clips)
             offsets = []
             for idx, bg in enumerate(selected):
                 dur = probe_duration(bg, s)
                 offsets.append(random_start(dur, self._clip_durations[idx], None if seed is None else seed + idx))
-            print(f"[VIDEO] Найдено {len(videos)} видео. Для ролика выбраны {target_clips} плана: " + " -> ".join(p.name for p in selected))
+            print(f"[VIDEO] Найдено {len(videos)} видео. Для ролика выбраны {num_clips} плана: " + " -> ".join(p.name for p in selected))
             return selected, offsets
 
-        # Резерв на одиночный фон
-        background = s.background_path
-        bg_dur = probe_duration(background, s)
-        st = 0.0 if s.loop_background and bg_dur < total_duration else random_start(bg_dur, total_duration, seed)
-        print(f"[VIDEO] Используется одиночный фон: {background.name}")
-        return [background], [st]
+        raise ValueError("No MP4 or MOV in assets/backgrounds")
 
     def _overlay_images(self, story: dict | None, overlays: Sequence[Path] | None) -> list[Path]:
         """Явно переданные картинки важнее, чем найденные по slug. Fail-soft: [] допустимо."""
