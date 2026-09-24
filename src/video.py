@@ -216,6 +216,9 @@ def render_video(
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
     ambient = settings.ambient_path
     has_ambient = ambient.is_file()
+    impact = settings.assets_dir / "sfx" / "impact.wav"
+    has_impact = impact.is_file()
+    has_audio_mix = has_ambient
     # Fail-soft: use at most four existing images.
     overlay_images = [p for p in list(overlays or [])[:4] if Path(p).is_file()]
 
@@ -285,6 +288,9 @@ def render_video(
         overlay_first_idx = (ambient_idx + 1) if has_ambient else (audio_idx + 1)
         for image, (start, end) in zip(overlay_images, spans):
             cmd += ["-loop", "1", "-t", f"{end - start:.3f}", "-i", str(image)]
+        impact_idx = overlay_first_idx + len(overlay_images)
+        if overlay_images and has_impact:
+            cmd += ["-i", str(impact)]
 
         if overlay_images:
             # Картинка ложится на фон до прожига субтитров, чтобы не перекрывать караоке.
@@ -295,10 +301,24 @@ def render_video(
         else:
             # Keep concat and subtitles in one chain so the labelled output remains connected.
             filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{cinematic_grade},{subtitle_filter}[vout]")
-        if has_ambient:
+        has_audio_mix = has_ambient or bool(overlay_images and has_impact)
+        if has_audio_mix:
+            mix_inputs = [f"[{audio_idx}:a]"]
+            if has_ambient:
+                filter_complex.append(f";[{ambient_idx}:a]volume=0.08[amb]")
+                mix_inputs.append("[amb]")
+            if overlay_images and has_impact:
+                # Reuse one impact input, delayed to every overlay appearance.
+                for order, (start, _end) in enumerate(spans[:len(overlay_images)]):
+                    delay_ms = max(0, int(round(start * 1000)))
+                    label = f"impact{order}"
+                    filter_complex.append(
+                        f";[{impact_idx}:a]adelay={delay_ms}:all=1,volume=0.28[{label}]"
+                    )
+                    mix_inputs.append(f"[{label}]")
             filter_complex.append(
-                f";[{ambient_idx}:a]volume=0.08[amb];"
-                f"[{audio_idx}:a][amb]amix=inputs=2:duration=first:dropout_transition=2,"
+                ";" + "".join(mix_inputs) +
+                f"amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=2,"
                 "loudnorm=I=-14:LRA=7:TP=-1.5[aout]"
             )
 
@@ -308,10 +328,10 @@ def render_video(
             "-map",
             "[vout]",
             "-map",
-            "[aout]" if has_ambient else f"{audio_idx}:a:0",
+            "[aout]" if has_audio_mix else f"{audio_idx}:a:0",
         ]
 
-    if not has_ambient:
+    if not has_audio_mix:
         cmd += ["-af", "loudnorm=I=-14:LRA=7:TP=-1.5"]
 
     cmd += [
