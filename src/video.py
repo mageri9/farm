@@ -8,12 +8,15 @@ import subprocess
 import tempfile
 import os
 import time
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
 from .config import Settings
 from .subtitles import escape_subtitle_path
+
+logger = logging.getLogger("shorts")
 
 
 class VideoError(RuntimeError):
@@ -222,7 +225,7 @@ def render_video(
     # Fail-soft: use at most four existing images.
     overlay_images = [p for p in list(overlays or [])[:4] if Path(p).is_file()]
 
-    cmd = [executable, "-nostdin", "-y", "-hide_banner", "-loglevel", "error"]
+    cmd = [executable, "-nostdin", "-y", "-hide_banner", "-nostats", "-loglevel", "warning"]
 
     crop_scale = (
         f"scale={settings.video_width}:{settings.video_height}:force_original_aspect_ratio=increase,"
@@ -247,8 +250,9 @@ def render_video(
         if has_ambient:
             cmd += [
                 "-vf", vf, "-filter_complex",
-                "[2:a]volume=0.08[amb];"
-                "[1:a][amb]amix=inputs=2:duration=first:dropout_transition=2,"
+                "[2:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.08[amb];"
+                "[1:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[main];"
+                "[main][amb]amix=inputs=2:duration=first:dropout_transition=0,"
                 "loudnorm=I=-14:LRA=7:TP=-1.5[aout]",
                 "-map", "0:v:0", "-map", "[aout]",
             ]
@@ -303,22 +307,31 @@ def render_video(
             filter_complex.append(f"{concat_inputs}concat=n={len(bg_list)}:v=1:a=0,{cinematic_grade},{subtitle_filter}[vout]")
         has_audio_mix = has_ambient or bool(overlay_images and has_impact)
         if has_audio_mix:
-            mix_inputs = [f"[{audio_idx}:a]"]
+            filter_complex.append(
+                f";[{audio_idx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[main]"
+            )
+            mix_inputs = ["[main]"]
             if has_ambient:
-                filter_complex.append(f";[{ambient_idx}:a]volume=0.08[amb]")
+                filter_complex.append(
+                    f";[{ambient_idx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.08[amb]"
+                )
                 mix_inputs.append("[amb]")
             if overlay_images and has_impact:
-                # Reuse one impact input, delayed to every overlay appearance.
+                # Split the single impact stream before applying independent delays.
+                filter_complex.append(
+                    f";[{impact_idx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                    f"asplit={len(spans)}" + "".join(f"[sfx{n}]" for n in range(len(spans)))
+                )
                 for order, (start, _end) in enumerate(spans[:len(overlay_images)]):
                     delay_ms = max(0, int(round(start * 1000)))
                     label = f"impact{order}"
                     filter_complex.append(
-                        f";[{impact_idx}:a]adelay={delay_ms}:all=1,volume=0.28[{label}]"
+                        f";[sfx{order}]adelay={delay_ms}:all=1,volume=0.28[{label}]"
                     )
                     mix_inputs.append(f"[{label}]")
             filter_complex.append(
                 ";" + "".join(mix_inputs) +
-                f"amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=2,"
+                f"amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=0,"
                 "loudnorm=I=-14:LRA=7:TP=-1.5[aout]"
             )
 
@@ -343,10 +356,20 @@ def render_video(
     ]
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("FFmpeg command: %s", subprocess.list2cmdline(cmd))
     try:
-        subprocess.run(
-            cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=settings.render_timeout
-        )
+        with tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            try:
+                subprocess.run(
+                    cmd, check=True, stdout=subprocess.DEVNULL, stderr=stderr_file,
+                    timeout=settings.render_timeout
+                )
+            except subprocess.CalledProcessError as exc:
+                # Keep only a bounded diagnostic tail in memory, even after log floods.
+                stderr_file.seek(0, os.SEEK_END)
+                stderr_file.seek(max(0, stderr_file.tell() - 65536))
+                exc.stderr = stderr_file.read(65536).decode("utf-8", errors="replace")
+                raise
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip().splitlines()[-8:]
         raise VideoError("FFmpeg render failed:\n" + "\n".join(detail)) from exc
