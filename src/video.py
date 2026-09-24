@@ -6,6 +6,9 @@ import random
 import shutil
 import subprocess
 import tempfile
+import os
+import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
@@ -65,6 +68,18 @@ def random_start(background_duration: float, segment_duration: float, seed: int 
 OVERLAY_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 
 
+@lru_cache(maxsize=1)
+def _cutout_session():
+    """Create rembg's ONNX session once per process."""
+    from rembg import new_session
+    import onnxruntime as ort
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = os.cpu_count() or 1
+    opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    return new_session(sess_opts=opts)
+
+
 def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
     """Ассеты предмета: assets/items/{slug}/*.ext по имени, иначе assets/items/{slug}.ext.
 
@@ -89,14 +104,24 @@ def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
                     from PIL import Image
                     print(f"[AUTO-CUTOUT] Вырезаем фон для {len(raw)} изображений предмета...", flush=True)
                     # Publish only after the entire batch succeeds, so a failed cutout can be retried.
+                    session = _cutout_session()
                     with tempfile.TemporaryDirectory(dir=folder) as staging:
                         for index, source in enumerate(raw, 1):
+                            resize_started = time.perf_counter()
                             with Image.open(source) as image:
-                                max_dim = 1200
+                                image.load()
+                                max_dim = 1024
                                 if max(image.size) > max_dim:
-                                    image.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-                                result = remove(image)
+                                    image.thumbnail((max_dim, max_dim), Image.Resampling.BILINEAR)
+                                resize_time = time.perf_counter() - resize_started
+                                inference_started = time.perf_counter()
+                                result = remove(image, session=session)
+                                inference_time = time.perf_counter() - inference_started
+                                save_started = time.perf_counter()
                                 result.save(Path(staging) / f"{index}.png")
+                                save_time = time.perf_counter() - save_started
+                            print(f"[CUTOUT] {source.name} -> {index}.png: resize={resize_time:.2f}s, "
+                                  f"inference={inference_time:.2f}s, save={save_time:.2f}s", flush=True)
                         converted = [folder / f"{index}.png" for index in range(1, len(raw) + 1)]
                         for target in converted:
                             (Path(staging) / target.name).replace(target)
