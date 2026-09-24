@@ -216,7 +216,8 @@ def render_video(
             cmd += [
                 "-vf", vf, "-filter_complex",
                 "[2:a]volume=0.08[amb];"
-                "[1:a][amb]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                "[1:a][amb]amix=inputs=2:duration=first:dropout_transition=2,"
+                "loudnorm=I=-14:LRA=7:TP=-1.5[aout]",
                 "-map", "0:v:0", "-map", "[aout]",
             ]
         else:
@@ -268,7 +269,8 @@ def render_video(
         if has_ambient:
             filter_complex.append(
                 f";[{ambient_idx}:a]volume=0.08[amb];"
-                f"[{audio_idx}:a][amb]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+                f"[{audio_idx}:a][amb]amix=inputs=2:duration=first:dropout_transition=2,"
+                "loudnorm=I=-14:LRA=7:TP=-1.5[aout]"
             )
 
         cmd += [
@@ -279,6 +281,9 @@ def render_video(
             "-map",
             "[aout]" if has_ambient else f"{audio_idx}:a:0",
         ]
+
+    if not has_ambient:
+        cmd += ["-af", "loudnorm=I=-14:LRA=7:TP=-1.5"]
 
     cmd += [
         "-t", f"{duration:.3f}",
