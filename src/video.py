@@ -326,7 +326,7 @@ def render_video(
                     delay_ms = max(0, int(round(start * 1000)))
                     label = f"impact{order}"
                     filter_complex.append(
-                        f";[sfx{order}]adelay={delay_ms}:all=1,volume=0.28[{label}]"
+                        f";[sfx{order}]adelay={delay_ms}:all=1,volume=0.12[{label}]"
                     )
                     mix_inputs.append(f"[{label}]")
             filter_complex.append(

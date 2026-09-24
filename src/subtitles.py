@@ -56,7 +56,7 @@ def choose_font(configured: str, fonts_dir: Path | None = None) -> str:
 
 
 def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtitle: int = 2,
-              font_name: str = "Forum", font_size: int = 64, fonts_dir: Path | None = None) -> int:
+              font_name: str = "Forum", font_size: int = 74, fonts_dir: Path | None = None) -> int:
     groups = group_words(words, words_per_subtitle)
     if not groups:
         raise ValueError("No valid words available for subtitles")
