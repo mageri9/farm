@@ -56,7 +56,7 @@ def choose_font(configured: str, fonts_dir: Path | None = None) -> str:
 
 
 def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtitle: int = 2,
-              font_name: str = "Forum", font_size: int = 80, fonts_dir: Path | None = None) -> int:
+              font_name: str = "Forum", font_size: int = 64, fonts_dir: Path | None = None) -> int:
     groups = group_words(words, words_per_subtitle)
     if not groups:
         raise ValueError("No valid words available for subtitles")
@@ -65,7 +65,7 @@ def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtit
         "[Script Info]", "ScriptType: v4.00+", "PlayResX: 1080", "PlayResY: 1920",
         "ScaledBorderAndShadow: yes", "", "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{font},{font_size},&H00E8E8E8,&H0061D0F5,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1.5,2,40,40,200,1",
+        f"Style: Default,{font},{font_size},&H00E8E8E8,&H0061D0F5,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1.5,2,40,40,260,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for group in groups:

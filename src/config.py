@@ -26,7 +26,7 @@ class Settings:
     preset: str = "veryfast"
     audio_bitrate: str = "192k"
     font_name: str = "Forum"
-    font_size: int = 80
+    font_size: int = 64
     cleanup_work: bool = True
     root: Path = Path(__file__).resolve().parent.parent
     background: Path | None = None

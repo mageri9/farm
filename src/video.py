@@ -119,12 +119,16 @@ def overlay_spans(num_images: int, total_duration: float) -> list[tuple[float, f
     """Return (start, end) windows, clipped to the video duration."""
     if num_images < 1 or total_duration <= 0 or not math.isfinite(total_duration):
         return []
-    num_images = min(num_images, 4)
-    specs = {1: [(2.0, 8.0)], 2: [(2.0, 6.0), (total_duration * .45, 6.0)],
-             3: [(2.0, 5.5), (total_duration * .35, 5.5), (total_duration * .65, 5.5)],
-             4: [(2.0, 5.0), (total_duration * .28, 5.0), (total_duration * .52, 5.0),
-                 (max(0.0, min(total_duration * .72, total_duration - 4.5)), 5.0)]}
-    return [(start, min(total_duration, start + dur)) for start, dur in specs[num_images] if start < total_duration]
+    start_global = 0.8
+    end_global = total_duration - 0.5
+    total_window = end_global - start_global
+    if total_window <= 0:
+        return []
+    span_duration = total_window / num_images
+    return [
+        (start_global + i * span_duration, start_global + (i + 1) * span_duration)
+        for i in range(num_images)
+    ]
 
 
 def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[float, float]],
@@ -181,7 +185,7 @@ def render_video(
     subtitle_path = escape_subtitle_path(subtitles)
     fonts_dir = escape_subtitle_path(settings.assets_dir / "fonts")
     subtitle_filter = f"ass=filename='{subtitle_path}':fontsdir='{fonts_dir}'"
-    cinematic_grade = "eq=contrast=1.32:brightness=-0.14:saturation=0.48,vignette=PI/3"
+    cinematic_grade = "eq=contrast=1.35:brightness=-0.16:saturation=0.32,vignette=PI/3"
 
     bg_list = [backgrounds] if isinstance(backgrounds, Path) else list(backgrounds)
     starts = [start_offsets] if isinstance(start_offsets, (int, float)) else list(start_offsets)
