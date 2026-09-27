@@ -68,10 +68,31 @@ def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtit
         f"Style: Default,{font},{font_size},&H00E8E8E8,&H0061D0F5,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1.5,2,40,40,260,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    highlight_color = "&H0061D0F5"
+    primary_color = "&H00E8E8E8"
+
     for group in groups:
-        start, end = group[0].start, group[-1].end
-        text = " ".join(_escape_ass_text(w.word) for w in group)
-        lines.append(f"Dialogue: 0,{format_time_ass(start)},{format_time_ass(end)},Default,,0,0,0,,{text}")
+        n_words = len(group)
+        for active_idx in range(n_words):
+            w_start = group[0].start if active_idx == 0 else group[active_idx].start
+            if active_idx < n_words - 1:
+                w_end = group[active_idx + 1].start
+            else:
+                w_end = group[-1].end
+
+            if w_end <= w_start:
+                w_end = w_start + 0.05
+
+            parts = []
+            for idx, w in enumerate(group):
+                word_escaped = _escape_ass_text(w.word)
+                if idx == active_idx:
+                    parts.append(f"{\c{highlight_color}}{word_escaped}{\c{primary_color}}")
+                else:
+                    parts.append(word_escaped)
+
+            text = " ".join(parts)
+            lines.append(f"Dialogue: 0,{format_time_ass(w_start)},{format_time_ass(w_end)},Default,,0,0,0,,{text}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return len(groups)

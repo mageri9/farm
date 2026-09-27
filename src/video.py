@@ -156,8 +156,8 @@ def overlay_spans(num_images: int, total_duration: float) -> list[tuple[float, f
     """Return (start, end) windows, clipped to the video duration."""
     if num_images < 1 or total_duration <= 0 or not math.isfinite(total_duration):
         return []
-    start_global = 0.8
-    end_global = total_duration - 0.5
+    start_global = 0.0
+    end_global = total_duration
     total_window = end_global - start_global
     if total_window <= 0:
         return []
@@ -174,7 +174,7 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
     parts: list[str] = []
     current = base
     pos_x = "(W-w)/2"
-    pos_y = "(H-h)/2-120"
+    pos_y = "(H-h)/2-140"
     for order, (_image, (start, end)) in enumerate(zip(images, spans)):
         idx = first_input + order
         span = end - start
@@ -190,8 +190,11 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
                  f"trim=duration={span:.3f},setpts=PTS-STARTPTS,"
                  f"scale=eval=frame:w='max(2,trunc(iw*(1+0.04*clip(t/{span:.3f},0,1))/2)*2)':h=-1,setsar=1")
         if fade > 0:
-            chain += (f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
-                      f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1")
+            if order == 0:
+                chain += f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1"
+            else:
+                chain += (f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
+                          f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1")
         if start > 0:
             chain += f",tpad=start_duration={start:.3f}:start_mode=add:color=0x00000000"
         shadow = f"sh{order}"
