@@ -58,12 +58,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def posting(story: dict, filename: str, index: int, status: str) -> str:
-    tags = " ".join(story.get("tags", []))
-    return ("=" * 40 + f"\n[Ролик {index:02d}] Файл: {filename}\n"
-            f"Статус: {status}\nНазвание: {story.get('title', 'Без названия')}\nТеги: {tags}\n"
-            "Закрепленный комментарий:\nКакой вывод из этого факта кажется самым неожиданным?\n" + "=" * 40)
-
-
+    desc = (story.get('description') or story.get('title') or '').strip()
+    raw_tags = story.get('tags', [])
+    tags = [t if t.startswith('#') else ('#' + t) for t in raw_tags][:5]
+    tags_str = ' '.join(tags)
+    return (desc + '\n\n' + tags_str).strip()
 async def main_async(args: argparse.Namespace) -> int:
     load_dotenv(ROOT / ".env")
     if args.count < 1:

@@ -68,8 +68,8 @@ def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtit
         f"Style: Default,{font},{font_size},&H00E8E8E8,&H0061D0F5,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1.5,2,40,40,260,1",
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    highlight_color = "&H0061D0F5"
-    primary_color = "&H00E8E8E8"
+    hl_tag = "{\\c&H0061D0F5&}"
+    reset_tag = "{\\c&H00E8E8E8&}"
 
     for group in groups:
         n_words = len(group)
@@ -87,7 +87,7 @@ def write_ass(words: Iterable[WordBoundary], output_path: Path, words_per_subtit
             for idx, w in enumerate(group):
                 word_escaped = _escape_ass_text(w.word)
                 if idx == active_idx:
-                    parts.append(f"{\c{highlight_color}}{word_escaped}{\c{primary_color}}")
+                    parts.append(f"{hl_tag}{word_escaped}{reset_tag}")
                 else:
                     parts.append(word_escaped)
 
