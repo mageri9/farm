@@ -24,6 +24,9 @@ from .video import (
 )
 
 
+BACKGROUND_TARGET_CHUNK = 4.2
+
+
 class ShortsPipeline:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or Settings.from_env()
@@ -46,7 +49,8 @@ class ShortsPipeline:
         s = self.settings
         if not math.isfinite(total_duration) or total_duration <= 0:
             raise ValueError("total_duration must be positive and finite")
-        num_clips = max(1, math.ceil(total_duration / 9.0))
+        # Nearest count gives eight equal shots for 33-35 seconds of speech.
+        num_clips = max(1, int(math.floor(total_duration / BACKGROUND_TARGET_CHUNK + 0.5)))
         self._clip_durations = [total_duration / num_clips] * num_clips
         print(f"[VIDEO] Равные тайминги планов (сек): {[round(t, 3) for t in self._clip_durations]}")
 
