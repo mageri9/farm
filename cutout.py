@@ -12,7 +12,7 @@ def _session():
     opts.intra_op_num_threads = os.cpu_count() or 1
     opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    return new_session(sess_opts=opts)
+    return new_session(model_name="isnet-general-use", sess_opts=opts)
 
 src_dir = Path("assets/items")
 dst_dir = Path("assets/items/фламберг")
@@ -36,9 +36,18 @@ else:
             resize_time = time.perf_counter() - t
             t = time.perf_counter()
             result = remove(img, session=session)
+            output_img = result if isinstance(result, Image.Image) else Image.open(result)
+            output_img = output_img.convert("RGBA")
+            bbox = output_img.getchannel("A").getbbox()
+            if bbox:
+                pad = 8
+                w, h = output_img.size
+                padded_bbox = (max(0, bbox[0] - pad), max(0, bbox[1] - pad),
+                               min(w, bbox[2] + pad), min(h, bbox[3] + pad))
+                output_img = output_img.crop(padded_bbox)
             inference_time = time.perf_counter() - t
             t = time.perf_counter()
-            result.save(out_path, "PNG")
+            output_img.save(out_path, "PNG")
             save_time = time.perf_counter() - t
         print(f"[CUTOUT] {f.name} -> {out_path.name}: resize={resize_time:.2f}s, inference={inference_time:.2f}s, save={save_time:.2f}s", flush=True)
     print("\nУспешно! Все прозрачные PNG сохранены в assets/items/фламберг/")

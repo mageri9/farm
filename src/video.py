@@ -80,7 +80,7 @@ def _cutout_session():
     opts.intra_op_num_threads = os.cpu_count() or 1
     opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    return new_session(sess_opts=opts)
+    return new_session(model_name="isnet-general-use", sess_opts=opts)
 
 
 def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
@@ -119,9 +119,18 @@ def find_item_images(assets_dir: Path, slug: str) -> list[Path]:
                                 resize_time = time.perf_counter() - resize_started
                                 inference_started = time.perf_counter()
                                 result = remove(image, session=session)
+                                output_img = result if isinstance(result, Image.Image) else Image.open(result)
+                                output_img = output_img.convert("RGBA")
+                                bbox = output_img.getchannel("A").getbbox()
+                                if bbox:
+                                    pad = 8
+                                    w, h = output_img.size
+                                    padded_bbox = (max(0, bbox[0] - pad), max(0, bbox[1] - pad),
+                                                   min(w, bbox[2] + pad), min(h, bbox[3] + pad))
+                                    output_img = output_img.crop(padded_bbox)
                                 inference_time = time.perf_counter() - inference_started
                                 save_started = time.perf_counter()
-                                result.save(Path(staging) / f"{index}.png")
+                                output_img.save(Path(staging) / f"{index}.png")
                                 save_time = time.perf_counter() - save_started
                             print(f"[CUTOUT] {source.name} -> {index}.png: resize={resize_time:.2f}s, "
                                   f"inference={inference_time:.2f}s, save={save_time:.2f}s", flush=True)
@@ -174,7 +183,9 @@ def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[floa
         # Фейды считаются от нуля, затем tpad сдвигает окно прозрачными кадрами:
         # overlay всегда имеет кадр на втором входе и граф не встает в ожидание.
         # Local timestamps start at zero; the second scale preserves alpha and adds 4% zoom.
-        chain = (f"[{idx}:v]scale='min({settings.overlay_width},iw)':'min(1050,ih)':"
+        max_overlay_w = int(settings.video_width * 0.78)
+        max_overlay_h = int(settings.video_height * 0.72)
+        chain = (f"[{idx}:v]scale='min({max_overlay_w},iw)':'min({max_overlay_h},ih)':"
                  f"force_original_aspect_ratio=decrease,format=rgba,"
                  f"trim=duration={span:.3f},setpts=PTS-STARTPTS,"
                  f"scale=eval=frame:w='max(2,trunc(iw*(1+0.04*clip(t/{span:.3f},0,1))/2)*2)':h=-1,setsar=1")
