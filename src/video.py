@@ -170,47 +170,88 @@ def overlay_spans(num_images: int, total_duration: float) -> list[tuple[float, f
 
 def _overlay_chain(base: str, images: Sequence[Path], spans: Sequence[tuple[float, float]],
                    first_input: int, settings: Settings) -> tuple[list[str], str]:
-    """Строит filter_complex для наложения картинок поверх метки base."""
+    """Строит filter_complex для наложения картинок поверх метки base с макро-проездом на 2-м ракурсе."""
+    from PIL import Image
+
     parts: list[str] = []
     current = base
-    pos_x = "(W-w)/2"
-    pos_y = "(H-h)/2-140"
-    for order, (_image, (start, end)) in enumerate(zip(images, spans)):
+    default_pos_x = "(W-w)/2"
+    default_pos_y = "(H-h)/2-140"
+
+    for order, (img_path, (start, end)) in enumerate(zip(images, spans)):
         idx = first_input + order
         span = end - start
         fade = min(settings.overlay_fade, span / 2.0)
         label = f"ov{order}"
-        # Фейды считаются от нуля, затем tpad сдвигает окно прозрачными кадрами:
-        # overlay всегда имеет кадр на втором входе и граф не встает в ожидание.
-        # Local timestamps start at zero; the second scale preserves alpha and adds 4% zoom.
-        max_overlay_w = int(settings.video_width * 0.78)
-        max_overlay_h = int(settings.video_height * 0.72)
-        chain = (f"[{idx}:v]scale='min({max_overlay_w},iw)':'min({max_overlay_h},ih)':"
-                 f"force_original_aspect_ratio=decrease,format=rgba,"
-                 f"trim=duration={span:.3f},setpts=PTS-STARTPTS,"
-                 f"scale=eval=frame:w='max(2,trunc(iw*(1+0.04*clip(t/{span:.3f},0,1))/2)*2)':h=-1,setsar=1")
+
+        # Проверяем габариты изображения
+        try:
+            with Image.open(img_path) as im:
+                orig_w, orig_h = im.size
+        except Exception:
+            orig_w, orig_h = 1000, 2000
+
+        aspect = orig_h / max(1, orig_w)
+        # 2-й кадр (order == 1) при вертикальной ориентации (aspect >= 1.2) делает вертикальный макро-проезд
+        is_vertical_macro = (order == 1 and aspect >= 1.2)
+
+        if is_vertical_macro:
+            target_h = int(settings.video_height * 1.45)
+            target_w = int(orig_w * (target_h / orig_h))
+            max_w = int(settings.video_width * 0.82)
+            if target_w > max_w:
+                target_w = max_w
+                target_h = int(orig_h * (target_w / orig_w))
+            target_w = target_w - (target_w % 2)
+            target_h = target_h - (target_h % 2)
+
+            # Кинематика: сверху вниз
+            y_start = 70
+            y_end = (settings.video_height - 280) - target_h
+
+            pos_x_expr = "(W-w)/2"
+            pos_y_expr = f"'{y_start}+({y_end}-({y_start}))*clip((t-{start:.3f})/{span:.3f},0,1)'"
+            sh_x_expr = "(W-w)/2+14"
+            sh_y_expr = f"'{y_start+18}+({y_end}-({y_start}))*clip((t-{start:.3f})/{span:.3f},0,1)'"
+
+            chain = (f"[{idx}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,format=rgba,"
+                     f"trim=duration={span:.3f},setpts=PTS-STARTPTS,setsar=1")
+        else:
+            pos_x_expr = default_pos_x
+            pos_y_expr = default_pos_y
+            sh_x_expr = f"{default_pos_x}+14"
+            sh_y_expr = f"{default_pos_y}+18"
+
+            max_overlay_w = int(settings.video_width * 0.78)
+            max_overlay_h = int(settings.video_height * 0.72)
+            chain = (f"[{idx}:v]scale='min({max_overlay_w},iw)':'min({max_overlay_h},ih)':"
+                     f"force_original_aspect_ratio=decrease,format=rgba,"
+                     f"trim=duration={span:.3f},setpts=PTS-STARTPTS,"
+                     f"scale=eval=frame:w='max(2,trunc(iw*(1+0.04*clip(t/{span:.3f},0,1))/2)*2)':h=-1,setsar=1")
+
         if fade > 0:
             if order == 0:
                 chain += f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1"
             else:
                 chain += (f",fade=t=in:st=0:d={fade:.3f}:alpha=1"
                           f",fade=t=out:st={span - fade:.3f}:d={fade:.3f}:alpha=1")
+
         if start > 0:
             chain += f",tpad=start_duration={start:.3f}:start_mode=add:color=0x00000000"
+
         shadow = f"sh{order}"
         parts.append(chain + f",split[{label}][{shadow}];")
         blurred = f"blursh{order}"
-        parts.append(f"[{shadow}]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=12:12[{blurred}];")
+        parts.append(f"[{shadow}]scale=iw/2:ih/2,colorchannelmixer=rr=0:gg=0:bb=0:aa=0.55,boxblur=6:6,scale=iw*2:ih*2[{blurred}];")
         with_shadow = f"ovshadow{order}"
-        parts.append(f"[{current}][{blurred}]overlay={pos_x}+14:{pos_y}+18:"
+        parts.append(f"[{current}][{blurred}]overlay={sh_x_expr}:{sh_y_expr}:eval=frame:"
                      f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[{with_shadow}];")
         nxt = f"ovout{order}"
-        parts.append(f"[{with_shadow}][{label}]overlay={pos_x}:{pos_y}:"
+        parts.append(f"[{with_shadow}][{label}]overlay={pos_x_expr}:{pos_y_expr}:eval=frame:"
                      f"enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[{nxt}];")
         current = nxt
+
     return parts, current
-
-
 def render_video(
     backgrounds: Sequence[Path] | Path,
     audio: Path,
@@ -363,7 +404,7 @@ def render_video(
 
     cmd += [
         "-t", f"{duration:.3f}",
-        "-c:v", "libx264", "-preset", settings.preset, "-crf", str(settings.crf),
+        "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "22",
         "-r", str(settings.fps), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", settings.audio_bitrate,
         "-movflags", "+faststart", "-shortest", str(output),
