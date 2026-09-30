@@ -407,7 +407,7 @@ def render_video(
         "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "22",
         "-r", str(settings.fps), "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", settings.audio_bitrate,
-        "-movflags", "+faststart", "-shortest", str(output),
+        "-movflags", "+faststart", str(output),
     ]
 
     output.parent.mkdir(parents=True, exist_ok=True)

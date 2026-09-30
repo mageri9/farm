@@ -15,22 +15,13 @@ from .llm import complete_with_fallback
 
 CATEGORIES = ("systems", "science", "mind")
 
-MIN_WORDS = 75
-MAX_WORDS = 83
+MIN_WORDS = 70
+MAX_WORDS = 88
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "weapon_forensic.txt"
 
-OUTPUT_PROMPT = """ФОРМАТ ВЫВОДА: только JSON-массив объектов с полями topic, category, source_url, title, beats и tags.
-Для каждого экспоната примени редакторскую формулу из шаблона. Сохрани пять этапов монолога в четырех полях beats:
-- establishing: токсичный хук.
-- tension: геометрия и рычаг.
-- subject: сопромат и кинетика, затем медицинская анатомия.
-- aftermath: холодный приговор.
-Каждый блок непустой. Вместе блоки образуют единый устный монолог из 75–83 слов, без заголовков этапов.
-Ограничения чисел и пунктуации относятся к озвучиваемому тексту beats, а не к синтаксису JSON, ссылкам или тегам.
-Используй только реальные, задокументированные сведения. Примеры шаблона не являются фактами о заданном предмете.
-source_url — прямая HTTPS-ссылка на Википедию или отчет.
+OUTPUT_PROMPT = """ФОРМАТ ВЫВОДА: только JSON-массив объектов без markdown.
 Формат объекта:
-{"topic": "English Name", "category": "systems", "source_url": "https://...", "title": "Хлесткий заголовок", "beats": {"establishing": "...", "tension": "...", "subject": "...", "aftermath": "..."}, "tags": ["#шортс", "#факты"]}
+{"topic": "English Name", "category": "systems", "source_url": "https://...", "title": "Хлесткий заголовок", "beats": {"establishing": "...", "tension": "...", "subject": "...", "aftermath": "..."}, "tags": ["#шортс", "#история", "#оружие"]}
 """
 
 
